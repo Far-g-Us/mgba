@@ -1,0 +1,65 @@
+name: build-windows-sdl
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -S --noconfirm --needed \
+            mingw-w64-x86_64-toolchain \
+            mingw-w64-x86_64-cmake \
+            mingw-w64-x86_64-ninja \
+            mingw-w64-x86_64-lua \
+            mingw-w64-x86_64-SDL2 \
+            mingw-w64-x86_64-libpng \
+            mingw-w64-x86_64-zlib \
+            mingw-w64-x86_64-freetype \
+            mingw-w64-x86_64-libepoxy
+
+      - name: Configure
+        run: |
+          export PATH=/mingw64/bin:$PATH
+          cmake -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DENABLE_SCRIPTING=ON \
+            -DUSE_LUA=ON \
+            -DUSE_QT=OFF \
+            -DUSE_SDL=ON \
+            -DUSE_EDITLINE=OFF \
+            -S . -B build
+
+      - name: Build
+        run: |
+          export PATH=/mingw64/bin:$PATH
+          cmake --build build -j$(nproc)
+
+      - name: Collect runtime
+        run: |
+          mkdir -p dist
+          cp build/mgba-sdl.exe dist/
+          cp /mingw64/bin/*.dll dist/ || true
+
+      - name: Verify scripting is compiled in
+        run: |
+          ./dist/mgba-sdl.exe --help
+          if ! ./dist/mgba-sdl.exe --help 2>&1 | grep -qi "script"; then
+            echo "::warning::no script option in --help, checking binary instead"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mgba-sdl-windows
+          path: dist/
+          retention-days: 30

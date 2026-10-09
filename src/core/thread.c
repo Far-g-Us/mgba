@@ -444,11 +444,15 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
 	threadContext->impl->interruptDepth = 0;
 
 #ifdef USE_PTHREADS
+// MinGW-w64 does not expose sigaddset/SIGTRAP even with USE_PTHREADS on,
+	// so the signal mask is only set where the POSIX signal API exists.
+#	if !defined(_WIN32)
 	sigset_t signals;
 	sigemptyset(&signals);
 	sigaddset(&signals, SIGINT);
 	sigaddset(&signals, SIGTRAP);
 	pthread_sigmask(SIG_BLOCK, &signals, 0);
+#	endif
 #endif
 
 	mCoreSyncLoadCoreOpts(&threadContext->impl->sync, &threadContext->core->opts);

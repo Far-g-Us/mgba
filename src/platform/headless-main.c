@@ -194,6 +194,29 @@ int main(int argc, char * argv[]) {
 	}
 
 #ifdef ENABLE_SCRIPTING
+	unsigned videoWidth = 0;
+	unsigned videoHeight = 0;
+	mColor* videoBuffer = NULL;
+	// A headless run never hands the core a framebuffer, so the renderer has
+	// nowhere to draw. A screenshot taken then encodes NULL and comes out as a
+	// 33-byte empty PNG. Give the core one before any frame runs and it fills
+	// this in as emulation proceeds; the core does not own it, so we free it.
+	core->currentVideoSize(core, &videoWidth, &videoHeight);
+	if (videoWidth && videoHeight) {
+		videoBuffer = calloc(videoWidth * videoHeight, sizeof(mColor));
+		if (videoBuffer) {
+			core->setVideoBuffer(core, videoBuffer, videoWidth);
+			// Setting the buffer is not enough on its own. Until hwaccelVideo
+			// is reloaded, the dummy renderer stays associated with the video
+			// subsystem, and its getPixels is an empty function that leaves the
+			// pixel pointer NULL. That is what produced the 33-byte PNGs: the
+			// header was written at full size and then no pixels followed.
+			core->reloadConfigOption(core, "hwaccelVideo", &core->config);
+		}
+	}
+#endif
+
+#ifdef ENABLE_SCRIPTING
 	struct mScriptContext scriptContext;
 
 	if (args.nScripts > 0) {
@@ -247,6 +270,9 @@ scriptsError:
 #endif
 
 loadError:
+#ifdef ENABLE_SCRIPTING
+	free(videoBuffer);
+#endif
 	mStandardLoggerDeinit(&_logger);
 	mCoreConfigDeinit(&core->config);
 	core->deinit(core);

@@ -66,20 +66,29 @@ jobs:
         if: success()
         shell: msys2 {0}
         run: |
-          mkdir -p dist
-          cp build/mgba-sdl.exe dist/
-          for d in libgcc_s_seh-1 libstdc++-6 libwinpthread-1 zlib1 SDL2 libpng16-16; do
-            cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "missing $d.dll"
-          done
-          cd dist
           set +e
-          ./mgba-sdl.exe --help > help.txt 2>&1
-          echo "exit=$?" | tee -a help.txt
-          cat help.txt
+          EXE=$(find build -name "mgba-sdl*.exe" -type f | head -1)
+          echo "found exe: [$EXE]"
+          mkdir -p dist
+          if [ -z "$EXE" ]; then
+            echo "EXE NOT FOUND" | tee smoke.txt
+            ls -R build | head -50 >> smoke.txt
+          else
+            cp "$EXE" dist/
+            for d in libgcc_s_seh-1 libstdc++-6 libwinpthread-1 zlib1 SDL2 libpng16-16; do
+              cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "missing $d.dll" >> smoke.txt
+            done
+            cd dist
+            ./mgba-sdl.exe --help > smoke.txt 2>&1
+            echo "exit=$?" >> smoke.txt
+          fi
+          cat smoke.txt || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mgba-sdl-windows
-          path: dist/
+          path: |
+            dist/
+            smoke.txt
           retention-days: 30

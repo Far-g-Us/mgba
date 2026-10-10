@@ -16,24 +16,6 @@ typedef HANDLE Thread;
 typedef CRITICAL_SECTION Mutex;
 typedef CONDITION_VARIABLE Condition;
 
-// mGBA targets Windows 7 (_WIN32_WINNT 0x0601), where InitOnceExecuteOnce is
-// not available. A plain TlsAlloc needs no once-guard because the key it
-// creates is process-wide and idempotent per use site.
-typedef DWORD ThreadLocal;
-typedef DWORD ThreadLocalKey;
-
-static inline void ThreadLocalInitKey(ThreadLocalKey* key) {
-	*key = TlsAlloc();
-}
-
-static inline void ThreadLocalSetKey(ThreadLocalKey key, void* value) {
-	TlsSetValue(key, value);
-}
-
-static inline void* ThreadLocalGetValue(ThreadLocalKey key) {
-	return TlsGetValue(key);
-}
-
 static inline int MutexInit(Mutex* mutex) {
 	InitializeCriticalSection(mutex);
 	return GetLastError();
@@ -105,7 +87,9 @@ static inline int ThreadSetName(const char* name) {
 	return -1;
 }
 
-#if (__STDC_VERSION__ < 201112L) || (__STDC_NO_THREADS__ == 1)
+// mGBA targets Windows 7 (_WIN32_WINNT 0x0601), where InitOnceExecuteOnce does
+// not exist. Use TlsAlloc directly; it is available since Windows 2000.
+// threading.h only defines the C11 _Thread_local variants on non-Windows.
 typedef DWORD ThreadLocal;
 
 static inline void ThreadLocalInitKey(ThreadLocal* key) {
@@ -119,6 +103,5 @@ static inline void ThreadLocalSetKey(ThreadLocal key, void* value) {
 static inline void* ThreadLocalGetValue(ThreadLocal key) {
 	return TlsGetValue(key);
 }
-#endif
 
 #endif

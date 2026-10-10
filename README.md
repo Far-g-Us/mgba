@@ -268,3 +268,91 @@ mGBA contains the following third-party libraries:
 - [SQLite3](https://www.sqlite.org), which is public domain.
 
 If you are a game publisher and wish to license mGBA for commercial usage, please email [licensing@mgba.io](mailto:licensing@mgba.io) for more information.
+
+## Our fork
+
+This repository is a fork of mGBA with local changes for automation work
+(ROM tracing and memory dumps). Upstream behaviour is preserved everywhere
+except as listed below.
+
+### Platform status
+
+**Only the Windows build is verified, and not fully:**
+
+| variant | state |
+|---|---|
+| `mgba-headless.exe` | works, fully static, scripting available |
+| `mgba-sdl.exe` | builds, scripting available |
+| `mGBA.exe` (Qt) | does not start, compiler ABI mismatch |
+
+No other platform (Linux, macOS, consoles) has been built or verified from this
+fork. Everything below applies to Windows only.
+
+### 1. Windows TLS fix
+
+`include/mgba-util/common.h` pins `_WIN32_WINNT` to `0x0601` (Windows 7), where
+`InitOnceExecuteOnce` does not exist. The calls in `src/core/log.c`,
+`src/core/thread.c` and `src/script/context.c` jumped into a missing import and
+crashed every headless run with `0xC0000005` before any ROM was loaded.
+
+Replaced with `TlsAlloc`/`TlsGetValue` guarded by
+`InterlockedCompareExchange`.
+
+### 2. New scripting methods
+
+| method | purpose |
+|---|---|
+| `emu:hashRange(addr, length)` | CRC32 of a range, via `mgba-util/crc32.h`. Detect changes without transferring data |
+| `emu:findBytes(pattern, addr, len)` | Byte search. Returns a string, addresses packed 4 bytes LE. Refuses lengths over 64 MiB |
+| `emu:dumpRange(path, addr, len)` | Write a range to a file. Returns byte count, or -1/-2 on error |
+| `emu:stop()` | Terminate the process with exit code 0 |
+| `emu:pressKey(id)` | Press and hold a single key |
+
+### 3. `-L` command line flag
+
+Short alias for `--script`, so scripts can be passed without the config file.
+It is `-L` and not `-l`, because mGBA already uses `-l` for `--log-level`.
+
+### 4. `print` now flushes
+
+`print()` calls `fflush(stdout)`. Previously output was lost when the process
+was killed with stdout redirected, because stdio is block-buffered.
+
+### 5. `DISABLE_UPDATER` defaults to ON
+
+The fork never auto-updates, since builds come from CI. `updater-stub` is
+disabled; the option lives in `CMakeLists.txt`.
+
+### 6. Overflow fix in `findBytes`
+
+`length * 4` was computed in uint32, so a length above `0x40000000` wrapped to
+a tiny buffer and the first match wrote past it. Now capped at 64 MiB with a
+loop bound that cannot overflow.
+
+### Verified behaviour worth knowing
+
+`emu:read16` and `emu:read32` read **little-endian**, regardless of the GBA bus
+endianness. On bytes `DE AD BE EF` they yield `0xADDE` and `0xEFBEADDE`.
+
+`hashRange` matches `zlib.crc32`: both give `0x7C9CA35A` on `DE AD BE EF`.
+
+### Known limitations
+
+- `emu:runFrame()` and `emu:frameCycles()` crash the Lua context, and `pcall`
+  does not catch it.
+- `emu:screenshot()` crashes the context too: scripts run before the core video
+  buffer is initialised. Not fixed.
+- `findBytes` and `hashRange` read through `busRead8` instead of the existing
+  `mCoreMemorySearch`, which is one to two orders of magnitude slower on a 32 MiB
+  scan. Not measured.
+- The Qt frontend does not start: Qt is built with MinGW-Builds GCC 13.1 while
+  this fork uses MSYS2 GCC 16.2, and the ABIs are incompatible.
+
+### Tests
+
+`tools/mgba-headless/tests.lua` covers the new methods: 46 checks, 0 failures.
+Run it with:
+
+```cmd
+mgba-headless.exe -L tests.lua "path\to\game.gba"
+```

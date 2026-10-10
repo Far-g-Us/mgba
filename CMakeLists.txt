@@ -1036,7 +1036,9 @@ if(BUILD_LIBRETRO)
 	endif()
 endif()
 
-option(DISABLE_UPDATER "Skip the updater stub (useful for toolchain builds where its largefile symbols do not resolve)" OFF)
+# Our fork never auto-updates: builds are produced by CI, so the Qt updater and
+# its stub are dead weight, and the stub fails to link on some MinGW toolchains.
+set(DISABLE_UPDATER ON CACHE BOOL "Skip the Qt auto-updater and its stub")
 
 if(BUILD_QT AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND ENABLE_VFS AND NOT DISABLE_UPDATER)
 	set(BUILD_UPDATER ON)

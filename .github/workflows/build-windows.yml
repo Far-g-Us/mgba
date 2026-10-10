@@ -75,9 +75,12 @@ jobs:
             ls -R build | head -50 >> smoke.txt
           else
             cp "$EXE" dist/
+            # libmgba is a build output, not a system library
+            find build -name "libmgba*.dll" -exec cp {} dist/ \; 2>/dev/null
             for d in libgcc_s_seh-1 libstdc++-6 libwinpthread-1 zlib1 SDL2 libpng16-16; do
               cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "missing $d.dll" >> smoke.txt
             done
+            ls -la >> smoke.txt
             cd dist
             ./mgba-sdl.exe --help > smoke.txt 2>&1
             echo "exit=$?" >> smoke.txt

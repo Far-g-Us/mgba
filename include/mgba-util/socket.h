@@ -170,6 +170,18 @@ static inline void SocketCloseQuiet(Socket socket) {
 }
 
 static inline Socket SocketCreate(bool useIPv6, int protocol) {
+#if defined(_WIN32) && !defined(GEKKO)
+	/* Winsock has to be started before any socket call, and nothing in mGBA does
+	 * it: on Linux sockets need no setup so upstream never noticed, but on
+	 * Windows socket() fails with WSANOTINITIALISED and the GDB stub never binds.
+	 * Qt happens to start Winsock for us; the SDL and headless frontends have
+	 * nobody to do it, which is why -g looked broken. */
+	static LONG winsockStarted = 0;
+	if (InterlockedCompareExchange(&winsockStarted, 1, 0) == 0) {
+		WSADATA wsaData;
+		WSAStartup(MAKEWORD(2, 2), &wsaData);
+	}
+#endif
 	if (useIPv6) {
 #ifdef HAS_IPV6
 		return socket(AF_INET6, SOCK_STREAM, protocol);

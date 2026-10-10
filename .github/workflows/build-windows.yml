@@ -50,9 +50,20 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build -j4
+        run: |
+          set +e
+          cmake --build build -j4 2>&1 | tee build.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a build.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
 
       - name: Collect and smoke-test
+        if: success()
         shell: msys2 {0}
         run: |
           mkdir -p dist

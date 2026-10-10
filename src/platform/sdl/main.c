@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
 #endif
 	struct mSDLRenderer renderer = {0};
 
-	struct mCoreOptions opts = {
+struct mCoreOptions opts = {
 		.useBios = true,
 		.rewindEnable = true,
 		.rewindBufferCapacity = 600,
@@ -136,13 +136,24 @@ int main(int argc, char** argv) {
 	renderer.interframeBlending = renderer.core->opts.interframeBlending;
 	renderer.filter = renderer.core->opts.resampleVideo;
 
+#ifdef ENABLE_SCRIPTING
+	// A script that reads pixels back ends up in the GL renderer's getPixels,
+	// which is a glReadPixels call. Scripts run before the first frame, so no
+	// context is current yet and that call faults. The software renderer hands
+	// the core an ordinary framebuffer which SDL still uploads into the window,
+	// so scripted runs give up GPU acceleration in exchange for pixels that can
+	// be read back synchronously.
+	bool wantSoftwareRenderer = args.nScripts > 0;
+#else
+	bool wantSoftwareRenderer = false;
+#endif
+
 #ifdef BUILD_GL
-	if (mSDLGLCommonInit(&renderer)) {
+	if (!wantSoftwareRenderer && mSDLGLCommonInit(&renderer)) {
 		mSDLGLCreate(&renderer);
 	} else
 #elif defined(BUILD_GLES2) || defined(USE_EPOXY)
-	if (mSDLGLCommonInit(&renderer))
-	{
+	if (!wantSoftwareRenderer && mSDLGLCommonInit(&renderer)) {
 		mSDLGLES2Create(&renderer);
 	} else
 #endif
@@ -150,12 +161,15 @@ int main(int argc, char** argv) {
 		mSDLSWCreate(&renderer);
 	}
 
-	if (!renderer.init(&renderer)) {
+if (!renderer.init(&renderer)) {
 		mArgumentsDeinit(&args);
 		mCoreConfigDeinit(&renderer.core->config);
 		renderer.core->deinit(renderer.core);
 		return 1;
 	}
+
+#ifdef ENABLE_SCRIPTING
+#endif
 
 	renderer.player.bindings = &renderer.core->inputMap;
 	mSDLInitBindingsGBA(&renderer.core->inputMap);
@@ -218,8 +232,27 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
-	mCoreAutoloadSave(renderer->core);
+mCoreAutoloadSave(renderer->core);
+	// The headless frontend resets here too. Without it the CPU's dispatch
+	// tables are still unset, and a script that drives emulation (runFrame,
+	// step, frameCycles) faults on a NULL read inside ARMRunLoop. The normal
+	// SDL run loop only survives this because the core thread resets lazily on
+	// its first execution, which is too late for a script.
+	renderer->core->reset(renderer->core);
 	mArgumentsApplyFileLoads(args, renderer->core);
+
+#ifdef ENABLE_SCRIPTING
+	if (args->nScripts > 0) {
+		// A script with -L put us on the software renderer, whose framebuffer
+		// the init above already handed to the core. The GBA core associates its
+		// software renderer only when hwaccelVideo is reloaded, and that branch
+		// also requires the framebuffer to exist; until then the dummy renderer
+		// stays in place and its getPixels is an empty function, so a script
+		// screenshot comes back with no pixels. This has to happen after
+		// mCoreLoadFile: before that the core has nothing to reconfigure.
+		renderer->core->reloadConfigOption(renderer->core, "hwaccelVideo", &renderer->core->config);
+	}
+#endif
 #ifdef ENABLE_SCRIPTING
 	struct mScriptBridge* bridge = mScriptBridgeCreate();
 #ifdef ENABLE_PYTHON

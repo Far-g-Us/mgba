@@ -222,6 +222,12 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 #ifdef ENABLE_DEBUGGERS
 	CLIDebuggerScriptEngineInstall(bridge);
   #endif
+  // The bridge only carries the CLI debugger engine, so -L cannot be honoured
+  // here yet. Say so instead of accepting the flag and silently doing nothing.
+  if (args->nScripts > 0) {
+    fprintf(stderr, "Note: -L/--script is not supported by the SDL frontend yet;"
+                    " use mgba-headless.exe for scripting.\n");
+  }
   #endif
 
   #ifdef ENABLE_DEBUGGERS

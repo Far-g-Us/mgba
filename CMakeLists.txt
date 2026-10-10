@@ -1036,7 +1036,9 @@ if(BUILD_LIBRETRO)
 	endif()
 endif()
 
-if(BUILD_QT AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND ENABLE_VFS)
+option(DISABLE_UPDATER "Skip the updater stub (useful for toolchain builds where its largefile symbols do not resolve)" OFF)
+
+if(BUILD_QT AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND ENABLE_VFS AND NOT DISABLE_UPDATER)
 	set(BUILD_UPDATER ON)
 endif()
 

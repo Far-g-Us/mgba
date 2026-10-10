@@ -397,6 +397,114 @@ static struct mScriptValue* _mScriptCoreReadRange(struct mCore* core, uint32_t a
 	return value;
 }
 
+static uint32_t _rrCRC32Update(uint32_t crc, const uint8_t* data, size_t length) {
+	static uint32_t table[256];
+	static bool built = false;
+	size_t i;
+	if (!built) {
+		uint32_t n, k, c;
+		for (n = 0; n < 256; ++n) {
+			c = n;
+			for (k = 0; k < 8; ++k) {
+				c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+			}
+			table[n] = c;
+		}
+		built = true;
+	}
+	for (i = 0; i < length; ++i) {
+		crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+	}
+	return crc;
+}
+
+static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint32_t length) {
+	uint8_t buffer[256];
+	uint32_t crc = 0xFFFFFFFF;
+	uint32_t done = 0;
+	while (done < length) {
+		uint32_t chunk = length - done;
+		uint32_t i;
+		if (chunk > sizeof(buffer)) {
+			chunk = sizeof(buffer);
+		}
+		for (i = 0; i < chunk; ++i) {
+			buffer[i] = core->busRead8(core, address + done + i);
+		}
+		crc = _rrCRC32Update(crc, buffer, chunk);
+		done += chunk;
+	}
+	return (int32_t) (crc ^ 0xFFFFFFFF);
+}
+
+static int32_t _mScriptCoreDumpRange(struct mCore* core, const char* path, uint32_t address, uint32_t length) {
+	struct VFile* vf = VFileOpen(path, O_WRONLY | O_CREAT | O_TRUNC);
+	uint8_t buffer[256];
+	uint32_t done = 0;
+	if (!vf) {
+		return -1;
+	}
+	while (done < length) {
+		uint32_t chunk = length - done;
+		uint32_t i;
+		if (chunk > sizeof(buffer)) {
+			chunk = sizeof(buffer);
+		}
+		for (i = 0; i < chunk; ++i) {
+			buffer[i] = core->busRead8(core, address + done + i);
+		}
+		if (vf->write(vf, buffer, chunk) != (ssize_t) chunk) {
+			vf->close(vf);
+			return -2;
+		}
+		done += chunk;
+	}
+	vf->close(vf);
+	return (int32_t) length;
+}
+
+// Returns the match addresses packed as 4-byte little-endian values, so the
+// caller gets a plain string like readRange returns. Building an mScriptValue
+// table here is not worth the extra type machinery for a flat list of ints.
+static struct mScriptValue* _mScriptCoreFindBytes(struct mCore* core, struct mScriptString* pattern, uint32_t address, uint32_t length) {
+	struct mScriptValue* list;
+	char* out;
+	uint32_t patternLength;
+	const char* needle;
+	uint32_t i;
+	uint32_t found = 0;
+	if (!pattern || !pattern->size) {
+		return mScriptStringCreateEmpty(0);
+	}
+	needle = pattern->buffer;
+	patternLength = pattern->size;
+	if (patternLength > length) {
+		return mScriptStringCreateEmpty(0);
+	}
+
+	list = mScriptStringCreateEmpty(length * 4);
+	out = list->value.string->buffer;
+
+	for (i = 0; i + patternLength <= length; ++i) {
+		uint32_t j;
+		for (j = 0; j < patternLength; ++j) {
+			if (core->busRead8(core, address + i + j) != (uint8_t) needle[j]) {
+				break;
+			}
+		}
+		if (j == patternLength) {
+			uint32_t at = address + i;
+			out[found * 4 + 0] = at & 0xFF;
+			out[found * 4 + 1] = (at >> 8) & 0xFF;
+			out[found * 4 + 2] = (at >> 16) & 0xFF;
+			out[found * 4 + 3] = (at >> 24) & 0xFF;
+			found++;
+		}
+	}
+	list->value.string->size = found * 4;
+	return list;
+}
+
 static struct mScriptValue* _mScriptCoreReadRegister(const struct mCore* core, const char* regName) {
 	int32_t out = 0;
 	if (!core->readRegister(core, regName, &out)) {
@@ -524,6 +632,11 @@ mSCRIPT_DECLARE_STRUCT_D_METHOD(mCore, U32, busRead8, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_D_METHOD(mCore, U32, busRead16, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_D_METHOD(mCore, U32, busRead32, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_METHOD(mCore, WSTR, readRange, _mScriptCoreReadRange, 2, U32, address, U32, length);
+mSCRIPT_DECLARE_STRUCT_METHOD(mCore, S32, hashRange, _mScriptCoreHashRange, 2, U32, address, U32, length);
+mSCRIPT_DECLARE_STRUCT_METHOD(mCore, WSTR, findBytes, _mScriptCoreFindBytes, 3, STR, pattern, U32, address, U32, length);
+#ifdef ENABLE_VFS
+mSCRIPT_DECLARE_STRUCT_METHOD(mCore, S32, dumpRange, _mScriptCoreDumpRange, 3, CHARP, path, U32, address, U32, length);
+#endif
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite8, 2, U32, address, U8, value);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite16, 2, U32, address, U16, value);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite32, 2, U32, address, U32, value);
@@ -607,6 +720,12 @@ mSCRIPT_DEFINE_STRUCT(mCore)
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, read32, busRead32)
 	mSCRIPT_DEFINE_DOCSTRING("Read byte range from the given offset")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, readRange)
+	mSCRIPT_DEFINE_DOCSTRING("CRC32 of a byte range, for change detection without dumping it")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, hashRange)
+	mSCRIPT_DEFINE_DOCSTRING("Find all occurrences of a byte pattern, returns a table of addresses")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, findBytes)
+	mSCRIPT_DEFINE_DOCSTRING("Write a byte range to a file, returns the byte count or a negative error")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, dumpRange)
 	mSCRIPT_DEFINE_DOCSTRING("Write an 8-bit value from the given bus address")
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write8, busWrite8)
 	mSCRIPT_DEFINE_DOCSTRING("Write a 16-bit value from the given bus address")

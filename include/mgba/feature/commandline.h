@@ -58,6 +58,11 @@ struct mGraphicsOpts {
 	bool fullscreen;
 };
 
+// 240x160 is the GBA's native resolution, which is the size a window defaults
+// to when no scale is given, and that is far too small to use on a desktop.
+// -1..-8 and --scale=N still override this.
+#define DEFAULT_VIDEO_SCALE 3
+
 void usage(const char* arg0, const char* prologue, const char* epilogue, const struct mSubParser* subparsers, int nSubparsers);
 void version(const char* arg0);
 

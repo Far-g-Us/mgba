@@ -111,6 +111,9 @@ void ScriptingController::setVideoBackend(VideoBackend* backend) {
 }
 
 bool ScriptingController::loadFile(const QString& path) {
+	if (!m_initialized) {
+		init();
+	}
 	VFileDevice vf(path, QIODevice::ReadOnly);
 	if (!vf.isOpen()) {
 		return false;
@@ -352,6 +355,13 @@ void ScriptingController::detachGamepad() {
 }
 
 void ScriptingController::init() {
+	// Nothing upstream called this, so a script context built twice would leak
+	// its Lua state and double-attach the core. Idempotent, so the command-line
+	// scripts and the scripting view can both ask for it.
+	if (m_initialized) {
+		return;
+	}
+	m_initialized = true;
 	mScriptContextInit(&m_scriptContext);
 	mScriptContextAttachStdlib(&m_scriptContext);
 	mScriptContextAttachCanvas(&m_scriptContext);

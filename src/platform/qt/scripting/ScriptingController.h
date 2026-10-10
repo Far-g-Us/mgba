@@ -44,6 +44,7 @@ public:
 
 	bool loadFile(const QString& path);
 	bool load(VFileDevice& vf, const QString& name);
+	bool initialized() const { return m_initialized; }
 
 	void scriptingEvent(QObject* obj, QEvent* ev);
 
@@ -79,6 +80,8 @@ private slots:
 
 private:
 	void init();
+
+	bool m_initialized = false;
 
 	void attachGamepad();
 	void detachGamepad();

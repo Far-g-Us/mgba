@@ -108,9 +108,11 @@ struct mCoreOptions opts = {
 	}
 
 	renderer.core->baseVideoSize(renderer.core, &renderer.width, &renderer.height);
-	renderer.ratio = graphicsOpts.multiplier;
+renderer.ratio = graphicsOpts.multiplier;
 	if (renderer.ratio == 0) {
-		renderer.ratio = 1;
+		// Without this the window opens at the GBA's native 240x160, which is
+		// too small to use. -1..-8 and --scale=N still win.
+		renderer.ratio = DEFAULT_VIDEO_SCALE;
 	}
 	opts.width = renderer.width * renderer.ratio;
 	opts.height = renderer.height * renderer.ratio;

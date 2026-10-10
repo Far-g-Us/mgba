@@ -222,6 +222,16 @@ void Window::argumentsPassed() {
 		m_pendingState = args->savestate;
 	}
 
+#ifdef ENABLE_SCRIPTING
+	// -L/--script was parsed and stored but never consumed: this frontend built
+	// its scripting context lazily for the view, so a script given on the
+	// command line had nowhere to run. Hold the paths and load them once the
+	// core is up, which is when the context can be attached to it.
+	for (int i = 0; i < args->nScripts; ++i) {
+		m_pendingScripts.append(QString::fromUtf8(args->scripts[i]));
+	}
+#endif
+
 #ifdef ENABLE_GDB_STUB
 	if (args->debugGdb) {
 		if (!m_gdbController) {
@@ -241,16 +251,18 @@ void Window::argumentsPassed() {
 	}
 #endif
 
-	if (m_config->graphicsOpts()->multiplier > 0) {
-		m_savedScale = m_config->graphicsOpts()->multiplier;
+	int scale = m_config->graphicsOpts()->multiplier;
+	if (scale <= 0) {
+		scale = DEFAULT_VIDEO_SCALE;
+	}
+	m_savedScale = scale;
 
 #if defined(M_CORE_GBA)
-		QSize size(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS);
+	QSize size(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS);
 #elif defined(M_CORE_GB)
-		QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
+	QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
 #endif
-		m_initialSize = size * m_savedScale;
-	}
+	m_initialSize = size * m_savedScale;
 
 	if (args->fname) {
 		setController(m_manager->loadGame(args->fname));
@@ -319,7 +331,14 @@ void Window::loadConfig() {
 	reloadConfig();
 
 	if (opts->width && opts->height) {
-		m_initialSize = QSize(opts->width, opts->height);
+		QSize configured(opts->width, opts->height);
+		// Honouring a saved size no larger than the native resolution is what
+		// pins the window at 240x160 for good: the size that was saved the
+		// first time mGBA ever ran here was the default, not a choice. Anything
+		// bigger was deliberate, so keep it.
+		if (configured.width() > minimumSize().width() || configured.height() > minimumSize().height()) {
+			m_initialSize = configured;
+		}
 	}
 
 	if (opts->fullscreen) {
@@ -926,6 +945,20 @@ void Window::gameStarted() {
 	m_config->updateOption("resampleVideo");
 	attachWidget(m_display.get());
 	setFocus();
+
+#ifdef ENABLE_SCRIPTING
+	if (!m_pendingScripts.isEmpty()) {
+		ensureScripting();
+		if (m_scripting) {
+			for (const QString& script: m_pendingScripts) {
+				if (!m_scripting->loadFile(script)) {
+					qWarning() << "Failed to load script" << script;
+				}
+			}
+		}
+		m_pendingScripts.clear();
+	}
+#endif
 
 #ifndef Q_OS_MAC
 	if (isFullScreen()) {

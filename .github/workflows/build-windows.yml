@@ -8,29 +8,27 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Refresh package database
-        run: pacman -Sy --noconfirm
-
-      - name: Install dependencies
-        run: |
-          pacman -S --noconfirm --needed mingw-w64-x86_64-gcc
-          pacman -S --noconfirm --needed mingw-w64-x86_64-cmake
-          pacman -S --noconfirm --needed mingw-w64-x86_64-lua
-          pacman -S --noconfirm --needed mingw-w64-x86_64-SDL2
-          pacman -S --noconfirm --needed mingw-w64-x86_64-libpng
-          pacman -S --noconfirm --needed mingw-w64-x86_64-zlib
-          pacman -S --noconfirm --needed mingw-w64-x86_64-freetype
-          pacman -S --noconfirm --needed mingw-w64-x86_64-libepoxy
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-lua
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-libepoxy
 
       - name: Configure
+        shell: msys2 {0}
         run: |
-          export PATH=/mingw64/bin:$PATH
           cmake -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
@@ -42,22 +40,20 @@ jobs:
             -S . -B build
 
       - name: Build
-        run: |
-          export PATH=/mingw64/bin:$PATH
-          cmake --build build -j$(nproc)
+        shell: msys2 {0}
+        run: cmake --build build -j4
 
-      - name: Collect runtime
+      - name: Collect and smoke-test
+        shell: msys2 {0}
         run: |
           mkdir -p dist
           cp build/mgba-sdl.exe dist/
           for d in libgcc_s_seh-1 libstdc++-6 libwinpthread-1 zlib1 SDL2 libpng16-16; do
-            cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "::warning::missing $d.dll"
+            cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "missing $d.dll"
           done
-
-      - name: Verify scripting is compiled in
-        run: |
-          ./dist/mgba-sdl.exe --help | tee help.txt
-          grep -qi script help.txt || echo "::warning::no script option listed in --help"
+          cd dist
+          ./mgba-sdl.exe --help | tee help.txt
+          grep -qi script help.txt && echo "SCRIPTING OPTION PRESENT"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -18,14 +18,21 @@ static void _createTLS(void) {
 	ThreadLocalInitKey(&_threadContext);
 }
 #elif _WIN32
-static INIT_ONCE _contextOnce = INIT_ONCE_STATIC_INIT;
+static LONG _contextOnce = 0;
 
-static BOOL CALLBACK _createTLS(PINIT_ONCE once, PVOID param, PVOID* context) {
-	UNUSED(once);
-	UNUSED(param);
-	UNUSED(context);
+static void _createTLS(void) {
 	ThreadLocalInitKey(&_threadContext);
-	return TRUE;
+}
+
+static void _initTLSOnce(void) {
+	while (InterlockedCompareExchange(&_contextOnce, 1, 0) != 0) {
+		if (_contextOnce == 2) {
+			return;
+		}
+		Sleep(0);
+	}
+	_createTLS();
+	InterlockedExchange(&_contextOnce, 2);
 }
 #endif
 
@@ -98,7 +105,7 @@ void mScriptContextInit(struct mScriptContext* context) {
 #ifdef USE_PTHREADS
 	pthread_once(&_contextOnce, _createTLS);
 #elif _WIN32
-	InitOnceExecuteOnce(&_contextOnce, _createTLS, NULL, 0);
+	_initTLSOnce();
 #endif
 	HashTableInit(&context->rootScope, 0, (void (*)(void*)) mScriptValueDeref);
 	HashTableInit(&context->engines, 0, _engineContextDestroy);

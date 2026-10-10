@@ -27,7 +27,7 @@ CXX_GUARD_START
 #endif
 
 #ifndef DISABLE_THREADING
-#if (__STDC_VERSION__ >= 201112L) && (__STDC_NO_THREADS__ != 1)
+#if 0
 #define ThreadLocal _Thread_local void*
 #define ThreadLocalInitKey(X)
 #define ThreadLocalSetKey(K, V) K = V

@@ -24,14 +24,10 @@ static void _createTLS(void) {
 	ThreadLocalInitKey(&_contextKey);
 }
 #elif _WIN32
-static INIT_ONCE _contextOnce = INIT_ONCE_STATIC_INIT;
+static LONG _contextOnce = 0;
 
-static BOOL CALLBACK _createTLS(PINIT_ONCE once, PVOID param, PVOID* context) {
-	UNUSED(once);
-	UNUSED(param);
-	UNUSED(context);
+static void _createTLS(void) {
 	ThreadLocalInitKey(&_contextKey);
-	return TRUE;
 }
 #endif
 
@@ -39,7 +35,17 @@ static void _setupTLS(void) {
 #ifdef USE_PTHREADS
 	pthread_once(&_contextOnce, _createTLS);
 #elif _WIN32
-	InitOnceExecuteOnce(&_contextOnce, _createTLS, NULL, 0);
+	while (InterlockedCompareExchange(&_contextOnce, 1, 0) != 0) {
+		Sleep(0);
+	}
+	if (_contextOnce == 1) {
+		_createTLS();
+		InterlockedExchange(&_contextOnce, 2);
+	} else {
+		while (_contextOnce != 2) {
+			Sleep(0);
+		}
+	}
 #endif
 }
 #endif
@@ -120,7 +126,8 @@ void mLog(int category, enum mLogLevel level, const char* format, ...) {
 			context->log(context, category, level, format, args);
 		}
 	} else {
-		printf("%s: ", mLogCategoryName(category));
+		const char* categoryName = mLogCategoryName(category);
+		printf("%s: ", categoryName ? categoryName : "?");
 		vprintf(format, args);
 		printf("\n");
 	}

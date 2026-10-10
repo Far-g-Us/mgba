@@ -27,14 +27,21 @@ static void _createTLS(void) {
 	ThreadLocalInitKey(&_contextKey);
 }
 #elif _WIN32
-static INIT_ONCE _contextOnce = INIT_ONCE_STATIC_INIT;
+static LONG _contextOnce = 0;
 
-static BOOL CALLBACK _createTLS(PINIT_ONCE once, PVOID param, PVOID* context) {
-	UNUSED(once);
-	UNUSED(param);
-	UNUSED(context);
+static void _createTLS(void) {
 	ThreadLocalInitKey(&_contextKey);
-	return TRUE;
+}
+
+static void _initTLSOnce(void) {
+	while (InterlockedCompareExchange(&_contextOnce, 1, 0) != 0) {
+		if (_contextOnce == 2) {
+			return;
+		}
+		Sleep(0);
+	}
+	_createTLS();
+	InterlockedExchange(&_contextOnce, 2);
 }
 #endif
 
@@ -208,7 +215,7 @@ static THREAD_ENTRY _mCoreThreadRun(void* context) {
 #ifdef USE_PTHREADS
 	pthread_once(&_contextOnce, _createTLS);
 #elif _WIN32
-	InitOnceExecuteOnce(&_contextOnce, _createTLS, NULL, 0);
+	_initTLSOnce();
 #endif
 
 	ThreadLocalSetKey(_contextKey, threadContext);
@@ -719,7 +726,7 @@ struct mCoreThread* mCoreThreadGet(void) {
 #ifdef USE_PTHREADS
 	pthread_once(&_contextOnce, _createTLS);
 #elif _WIN32
-	InitOnceExecuteOnce(&_contextOnce, _createTLS, NULL, 0);
+	_initTLSOnce();
 #endif
 	return ThreadLocalGetValue(_contextKey);
 }

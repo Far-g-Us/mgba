@@ -587,12 +587,15 @@ static int32_t _mScriptCoreLoadState(struct mCore* core, struct mScriptString* b
 }
 
 static struct mScriptValue* _mScriptCoreTakeScreenshotToImage(struct mCore* core) {
-	size_t stride;
-	const void* pixels = 0;
+	size_t stride = 0;
+	const void* pixels = NULL;
 	unsigned width, height;
 	core->currentVideoSize(core, &width, &height);
 	core->getPixels(core, &pixels, &stride);
-	if (!pixels) {
+	// stride can still come back 0 even when pixels is set; the mImage
+	// constructors below treat that as a stride of sizeof(mColor) and walk off
+	// the end of the buffer.
+	if (!pixels || !stride) {
 		return NULL;
 	}
 #ifndef COLOR_16_BIT

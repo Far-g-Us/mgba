@@ -427,6 +427,13 @@ static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint3
 	// running value is passed through untouched and the seed is 0.
 	uint32_t crc = 0;
 	uint32_t done = 0;
+	// Same fast path as findBytes: a mapped range can be hashed straight out of
+	// memory, with no per-byte busRead8 call at all.
+	size_t avail = 0;
+	const uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
+	if (direct && length <= avail) {
+		return (int32_t) crc32(0, direct, length);
+	}
 	while (done < length) {
 		uint32_t chunk = length - done;
 		uint32_t i;
@@ -491,6 +498,39 @@ static struct mScriptValue* _mScriptCoreFindBytes(struct mCore* core, struct mSc
 	patternLength = pattern->size;
 	if (patternLength > length || length > REFUSES_TO_SCAN) {
 		return mScriptStringCreateEmpty(0);
+	}
+
+	// Fast path: when the whole range sits inside one mapped block we get a
+	// direct pointer and can scan it in memory instead of paying a busRead8
+	// call per byte. Two passes rather than one, because the old code sized the
+	// result for the worst case (a match at every offset), which asks for 128MB
+	// to search a 32MB ROM.
+	size_t avail = 0;
+	const uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
+	if (direct && length <= avail) {
+		size_t limit = length - patternLength + 1;
+		size_t n;
+		size_t count = 0;
+		for (n = 0; n < limit; ++n) {
+			if (direct[n] == (uint8_t) needle[0] && memcmp(direct + n, needle, patternLength) == 0) {
+				count++;
+			}
+		}
+		list = mScriptStringCreateEmpty(count * 4);
+		out = list->value.string->buffer;
+		count = 0;
+		for (n = 0; n < limit; ++n) {
+			if (direct[n] == (uint8_t) needle[0] && memcmp(direct + n, needle, patternLength) == 0) {
+				uint32_t at = address + (uint32_t) n;
+				out[count * 4 + 0] = at & 0xFF;
+				out[count * 4 + 1] = (at >> 8) & 0xFF;
+				out[count * 4 + 2] = (at >> 16) & 0xFF;
+				out[count * 4 + 3] = (at >> 24) & 0xFF;
+				count++;
+			}
+		}
+		list->value.string->size = count * 4;
+		return list;
 	}
 
 	list = mScriptStringCreateEmpty((size_t) length * 4);

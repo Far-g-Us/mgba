@@ -29,6 +29,7 @@ jobs:
       - name: Configure
         shell: msys2 {0}
         run: |
+          set +e
           cmake -G "MinGW Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
@@ -37,7 +38,15 @@ jobs:
             -DUSE_QT=OFF \
             -DUSE_SDL=ON \
             -DUSE_EDITLINE=OFF \
-            -S . -B build
+            -S . -B build 2>&1 | tee configure.log
+          echo "exit=${PIPESTATUS[0]}" | tee -a configure.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: configure-log
+          path: configure.log
+          retention-days: 7
 
       - name: Build
         shell: msys2 {0}

@@ -60,6 +60,10 @@ struct mScriptContext;
 void mScriptContextAttachCore(struct mScriptContext*, struct mCore*);
 void mScriptContextDetachCore(struct mScriptContext*);
 
+// Set from a script via emu:stop() so a front-end's run loop can break out.
+void mScriptRequestStop(void);
+bool mScriptShouldStop(void);
+
 CXX_GUARD_END
 
 #endif

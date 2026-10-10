@@ -398,6 +398,29 @@ static struct mScriptValue* _mScriptCoreReadRange(struct mCore* core, uint32_t a
 	return value;
 }
 
+static bool _scriptStopRequested;
+
+void mScriptRequestStop(void) {
+	_scriptStopRequested = true;
+}
+
+bool mScriptShouldStop(void) {
+	return _scriptStopRequested;
+}
+
+static void _mScriptCoreStop(struct mCore* core) {
+	UNUSED(core);
+	mScriptRequestStop();
+}
+
+// Presses a key and leaves it held, so a script can walk menus with one call
+// per input instead of composing a mask by hand.
+static void _mScriptCorePressKey(struct mCore* core, int32_t key) {
+	if (key >= 0 && key < 32) {
+		core->addKeys(core, 1 << key);
+	}
+}
+
 static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint32_t length) {
 	uint8_t buffer[256];
 	// crc32() uses zlib semantics: it complements on entry and on exit, so the
@@ -610,6 +633,8 @@ mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, step, 0);
 
 // Key functions
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, setKeys, 1, U32, keys);
+mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, stop, _mScriptCoreStop, 0);
+mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, pressKey, _mScriptCorePressKey, 1, S32, key);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, addKeys, 1, U32, keys);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, clearKeys, 1, U32, keys);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, addKey, _mScriptCoreAddKey, 1, S32, key);
@@ -689,6 +714,10 @@ mSCRIPT_DEFINE_STRUCT(mCore)
 
 	mSCRIPT_DEFINE_DOCSTRING("Set the currently active key list")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, setKeys)
+	mSCRIPT_DEFINE_DOCSTRING("Stop the front-end run loop, letting the process exit cleanly")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, stop)
+	mSCRIPT_DEFINE_DOCSTRING("Press and hold a key (A=0, B=1, SELECT=2, START=3)")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, pressKey)
 	mSCRIPT_DEFINE_DOCSTRING("Add a single key to the currently active key list")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, addKey)
 	mSCRIPT_DEFINE_DOCSTRING("Add a bitmask of keys to the currently active key list")

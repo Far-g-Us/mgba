@@ -29,12 +29,14 @@
 #include <errno.h>
 #include <signal.h>
 
-#define HEADLESS_OPTIONS "S:R:"
+// -L, not -l: the generic parser already owns -l for --log-level.
+#define HEADLESS_OPTIONS "S:R:L:"
 static const char* const headlessUsage =
 	"Additional options:\n"
 	"  -S SWI           Run until specified SWI call before exiting\n"
 	"  -R REGISTER      General purpose register to return as exit code\n"
 #ifdef ENABLE_SCRIPTING
+	"  -L FILE          Run a script on start. Short alias for --script\n"
 	"  --script FILE    Run a script on start. Can be passed multiple times\n"
 #endif
 	;
@@ -225,7 +227,7 @@ int main(int argc, char * argv[]) {
 #endif
 	do {
 		core->runLoop(core);
-	} while (!_dispatchExiting);
+	} while (!_dispatchExiting && !mScriptShouldStop());
 	cleanExit = true;
 
 scriptsError:
@@ -353,6 +355,9 @@ static bool _parseHeadlessOpts(struct mSubParser* parser, int option, const char
 		return _parseSwi(arg, &opts->exitSwiImmediate);
 	case 'R':
 		opts->returnCodeRegister = strdup(arg);
+		return true;
+	case 'L':
+		*StringListAppend(&opts->scripts) = strdup(arg);
 		return true;
 	default:
 		return false;

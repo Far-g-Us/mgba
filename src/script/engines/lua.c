@@ -14,6 +14,8 @@
 #include <lualib.h>
 #include <lauxlib.h>
 
+#include <stdio.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -1643,6 +1645,9 @@ static int _luaPrintShim(lua_State* lua) {
 			printf("%s", str);
 		}
 		printf("\n");
+		// Flush explicitly: stdout is block-buffered when redirected, so a
+		// trace killed mid-run would otherwise lose everything it printed.
+		fflush(stdout);
 		return 0;
 	}
 	lua_insert(lua, 1);

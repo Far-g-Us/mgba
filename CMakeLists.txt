@@ -1085,7 +1085,15 @@ if(BUILD_QT)
 endif()
 
 if(BUILD_HEADLESS)
-	add_executable(${BINARY_NAME}-headless ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/headless-main.c)
+	set(HEADLESS_EXTRA_SOURCES)
+	if(WIN32)
+		# Same resource script as the Qt target, so this binary also gets the
+		# icon and the version block instead of shipping without either.
+		configure_file(${PROJECT_SOURCE_DIR}/res/mgba.rc.in ${CMAKE_BINARY_DIR}/res/mgba.rc)
+		set_source_files_properties(${CMAKE_BINARY_DIR}/res/mgba.rc PROPERTIES OBJECT_DEPENDS ${PROJECT_SOURCE_DIR}/res/mgba.ico)
+		list(APPEND HEADLESS_EXTRA_SOURCES ${CMAKE_BINARY_DIR}/res/mgba.rc)
+	endif()
+	add_executable(${BINARY_NAME}-headless ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/headless-main.c ${HEADLESS_EXTRA_SOURCES})
 	target_link_libraries(${BINARY_NAME}-headless ${PLATFORM_LIBRARY} ${BINARY_NAME})
 	debug_strip(${BINARY_NAME}-headless)
 	target_compile_definitions(${BINARY_NAME}-headless PRIVATE "${OS_DEFINES};${FEATURE_DEFINES};${FUNCTION_DEFINES}")

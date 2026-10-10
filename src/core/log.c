@@ -35,16 +35,22 @@ static void _setupTLS(void) {
 #ifdef USE_PTHREADS
 	pthread_once(&_contextOnce, _createTLS);
 #elif _WIN32
-	while (InterlockedCompareExchange(&_contextOnce, 1, 0) != 0) {
-		Sleep(0);
-	}
-	if (_contextOnce == 1) {
+	// 0 = idle, 1 = initialising, 2 = done. CompareExchange returns the previous
+	// value, so branch on that instead of re-reading the variable: reading it
+	// races, and writing 1 unconditionally would reset an already-finished key
+	// and spin forever.
+	switch (InterlockedCompareExchange(&_contextOnce, 1, 0)) {
+	case 0:
 		_createTLS();
 		InterlockedExchange(&_contextOnce, 2);
-	} else {
-		while (_contextOnce != 2) {
+		break;
+	case 1:
+		while (InterlockedCompareExchange(&_contextOnce, 2, 2) != 2) {
 			Sleep(0);
 		}
+		break;
+	default:
+		break;
 	}
 #endif
 }

@@ -6,6 +6,7 @@
 #include "main.h"
 
 #include <mgba/core/core.h>
+#include <mgba/core/scripting.h>
 #include <mgba/core/thread.h>
 #include <mgba/core/version.h>
 
@@ -148,6 +149,13 @@ void mSDLGLCommonRunloop(struct mSDLRenderer* renderer, void* user) {
 	}
 
 	while (mCoreThreadIsActive(context)) {
+		// A script calling emu:stop() should end the process, the same way it
+		// does in the headless frontend. End the core thread too, otherwise
+		// mCoreThreadJoin below waits on a thread that never stops.
+		if (mScriptShouldStop()) {
+			mCoreThreadEnd(context);
+			break;
+		}
 		while (SDL_PollEvent(&event)) {
 			mSDLHandleEvent(context, &renderer->player, &event);
 			// Event handling can change the size of the screen

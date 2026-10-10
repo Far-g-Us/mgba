@@ -51,13 +51,15 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 }
 
 void mSDLSWRunloop(struct mSDLRenderer* renderer, void* user) {
-	struct mCoreThread* context = user;
+struct mCoreThread* context = user;
 	SDL_Event event;
 
 	while (mCoreThreadIsActive(context)) {
 		// A script calling emu:stop() should end the process, the same way it
-		// does in the headless frontend. Without this the run loop spins forever.
+		// does in the headless frontend. End the core thread too, otherwise
+		// mCoreThreadJoin below waits on a thread that never stops.
 		if (mScriptShouldStop()) {
+			mCoreThreadEnd(context);
 			break;
 		}
 		while (SDL_PollEvent(&event)) {

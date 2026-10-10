@@ -209,6 +209,12 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	struct mCoreThread thread = {
 		.core = renderer->core
 	};
+#ifdef ENABLE_SCRIPTING
+	// The core thread dereferences this context every frame once it is attached,
+	// so it has to outlive the run loop. Deiniting it here crashed the process.
+	struct mScriptContext scriptContext;
+	bool hasScripts = false;
+#endif
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
@@ -222,12 +228,30 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 #ifdef ENABLE_DEBUGGERS
 	CLIDebuggerScriptEngineInstall(bridge);
   #endif
-  // The bridge only carries the CLI debugger engine, so -L cannot be honoured
-  // here yet. Say so instead of accepting the flag and silently doing nothing.
-  if (args->nScripts > 0) {
-    fprintf(stderr, "Note: -L/--script is not supported by the SDL frontend yet;"
-                    " use mgba-headless.exe for scripting.\n");
-  }
+  #endif
+
+  #ifdef ENABLE_SCRIPTING
+	if (args->nScripts > 0) {
+		int i;
+		hasScripts = true;
+		mScriptContextInit(&scriptContext);
+		mScriptContextAttachStdlib(&scriptContext);
+		mScriptContextAttachImage(&scriptContext);
+		mScriptContextAttachLogger(&scriptContext, NULL);
+		mScriptContextAttachSocket(&scriptContext);
+#ifdef USE_JSON_C
+		mScriptContextAttachStorage(&scriptContext);
+#endif
+		mScriptContextRegisterEngines(&scriptContext);
+
+		mScriptContextAttachCore(&scriptContext, renderer->core);
+
+		for (i = 0; i < args->nScripts; ++i) {
+			if (!mScriptContextLoadFile(&scriptContext, args->scripts[i])) {
+				mLOG(STATUS, ERROR, "Failed to load script \"%s\"", args->scripts[i]);
+			}
+		}
+	}
   #endif
 
   #ifdef ENABLE_DEBUGGERS
@@ -264,7 +288,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSetScreensaverSuspendable(&renderer->events, renderer->core->opts.suspendScreensaver);
 		mSDLSuspendScreensaver(&renderer->events);
 #endif
-		if (mSDLInitAudio(&renderer->audio, &thread)) {
+if (mSDLInitAudio(&renderer->audio, &thread)) {
 			if (args->savestate) {
 				struct VFile* state = VFileOpen(args->savestate, O_RDONLY);
 				if (state) {
@@ -274,7 +298,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 					state->close(state);
 				}
 			}
-			renderer->runloop(renderer, &thread);
+renderer->runloop(renderer, &thread);
 			mSDLPauseAudio(&renderer->audio);
 			if (mCoreThreadHasCrashed(&thread)) {
 				didFail = true;
@@ -290,13 +314,16 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSetScreensaverSuspendable(&renderer->events, false);
 #endif
 
-		mCoreThreadJoin(&thread);
+mCoreThreadJoin(&thread);
 	} else {
 		printf("Could not run game. Are you sure the file exists and is a compatible game?\n");
 	}
 	renderer->core->unloadROM(renderer->core);
 
 #ifdef ENABLE_SCRIPTING
+	if (hasScripts) {
+		mScriptContextDeinit(&scriptContext);
+	}
 	mScriptBridgeDestroy(bridge);
 #endif
 

@@ -34,14 +34,21 @@ static void _createTLS(void) {
 }
 
 static void _initTLSOnce(void) {
-	while (InterlockedCompareExchange(&_contextOnce, 1, 0) != 0) {
-		if (_contextOnce == 2) {
-			return;
+	// Same state machine as _setupTLS in log.c: 0 idle, 1 initialising, 2 done.
+	// Branch on the value CompareExchange returns, never re-read the variable.
+	switch (InterlockedCompareExchange(&_contextOnce, 1, 0)) {
+	case 0:
+		_createTLS();
+		InterlockedExchange(&_contextOnce, 2);
+		break;
+	case 1:
+		while (InterlockedCompareExchange(&_contextOnce, 2, 2) != 2) {
+			Sleep(0);
 		}
-		Sleep(0);
+		break;
+	default:
+		break;
 	}
-	_createTLS();
-	InterlockedExchange(&_contextOnce, 2);
 }
 #endif
 

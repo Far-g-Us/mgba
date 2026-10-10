@@ -118,6 +118,14 @@ if(ENABLE_SCRIPTING)
 	endif()
 endif()
 
+  # Without a resource script the executable carries no icon and no version
+  # info: res/mgba.rc was only ever wired into the Qt target.
+  if(WIN32)
+    configure_file(${PROJECT_SOURCE_DIR}/res/mgba.rc.in ${CMAKE_BINARY_DIR}/res/mgba.rc)
+    set_source_files_properties(${CMAKE_BINARY_DIR}/res/mgba.rc PROPERTIES OBJECT_DEPENDS ${PROJECT_SOURCE_DIR}/res/mgba.ico)
+    list(APPEND PLATFORM_SRC ${CMAKE_BINARY_DIR}/res/mgba.rc)
+  endif()
+
   # Not WIN32: the SDL frontend defines plain main(), and relying on SDL2main to
   # supply WinMain depends on the archive being rescanned after the CRT startup
   # object asks for it. A console subsystem build links directly and also keeps

@@ -12,6 +12,7 @@
 #endif
 #include <mgba/script/base.h>
 #include <mgba/script/context.h>
+#include <mgba-util/crc32.h>
 #include <mgba-util/table.h>
 #include <mgba-util/vfs.h>
 
@@ -397,30 +398,11 @@ static struct mScriptValue* _mScriptCoreReadRange(struct mCore* core, uint32_t a
 	return value;
 }
 
-static uint32_t _rrCRC32Update(uint32_t crc, const uint8_t* data, size_t length) {
-	static uint32_t table[256];
-	static bool built = false;
-	size_t i;
-	if (!built) {
-		uint32_t n, k, c;
-		for (n = 0; n < 256; ++n) {
-			c = n;
-			for (k = 0; k < 8; ++k) {
-				c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
-			}
-			table[n] = c;
-		}
-		built = true;
-	}
-	for (i = 0; i < length; ++i) {
-		crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-	}
-	return crc;
-}
-
 static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint32_t length) {
 	uint8_t buffer[256];
-	uint32_t crc = 0xFFFFFFFF;
+	// crc32() uses zlib semantics: it complements on entry and on exit, so the
+	// running value is passed through untouched and the seed is 0.
+	uint32_t crc = 0;
 	uint32_t done = 0;
 	while (done < length) {
 		uint32_t chunk = length - done;
@@ -431,12 +413,13 @@ static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint3
 		for (i = 0; i < chunk; ++i) {
 			buffer[i] = core->busRead8(core, address + done + i);
 		}
-		crc = _rrCRC32Update(crc, buffer, chunk);
+		crc = crc32(crc, buffer, chunk);
 		done += chunk;
 	}
-	return (int32_t) (crc ^ 0xFFFFFFFF);
+	return (int32_t) crc;
 }
 
+#ifdef ENABLE_VFS
 static int32_t _mScriptCoreDumpRange(struct mCore* core, const char* path, uint32_t address, uint32_t length) {
 	struct VFile* vf = VFileOpen(path, O_WRONLY | O_CREAT | O_TRUNC);
 	uint8_t buffer[256];
@@ -462,10 +445,15 @@ static int32_t _mScriptCoreDumpRange(struct mCore* core, const char* path, uint3
 	vf->close(vf);
 	return (int32_t) length;
 }
+#endif
 
 // Returns the match addresses packed as 4-byte little-endian values, so the
 // caller gets a plain string like readRange returns. Building an mScriptValue
 // table here is not worth the extra type machinery for a flat list of ints.
+// REFUSES_TO_SCAN caps the worst case: one match per scanned byte is the
+// upper bound on output, and without this a typo'd length allocates gigabytes
+// or overflows the length * 4 product below.
+#define REFUSES_TO_SCAN (64 * 1024 * 1024)
 static struct mScriptValue* _mScriptCoreFindBytes(struct mCore* core, struct mScriptString* pattern, uint32_t address, uint32_t length) {
 	struct mScriptValue* list;
 	char* out;
@@ -478,14 +466,16 @@ static struct mScriptValue* _mScriptCoreFindBytes(struct mCore* core, struct mSc
 	}
 	needle = pattern->buffer;
 	patternLength = pattern->size;
-	if (patternLength > length) {
+	if (patternLength > length || length > REFUSES_TO_SCAN) {
 		return mScriptStringCreateEmpty(0);
 	}
 
-	list = mScriptStringCreateEmpty(length * 4);
+	list = mScriptStringCreateEmpty((size_t) length * 4);
 	out = list->value.string->buffer;
 
-	for (i = 0; i + patternLength <= length; ++i) {
+	// i <= length - patternLength, not i + patternLength <= length:
+	// the latter overflows when length is close to UINT32_MAX.
+	for (i = 0; i <= length - patternLength; ++i) {
 		uint32_t j;
 		for (j = 0; j < patternLength; ++j) {
 			if (core->busRead8(core, address + i + j) != (uint8_t) needle[j]) {

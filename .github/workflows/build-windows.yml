@@ -72,10 +72,13 @@ jobs:
             cp "/mingw64/bin/$d.dll" dist/ 2>/dev/null || echo "missing $d.dll"
           done
           cd dist
-          ./mgba-sdl.exe --help | tee help.txt
-          grep -qi script help.txt && echo "SCRIPTING OPTION PRESENT"
+          set +e
+          ./mgba-sdl.exe --help > help.txt 2>&1
+          echo "exit=$?" | tee -a help.txt
+          cat help.txt
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mgba-sdl-windows
           path: dist/

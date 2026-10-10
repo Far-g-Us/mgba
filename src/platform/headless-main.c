@@ -30,13 +30,13 @@
 #include <signal.h>
 
 // -L, not -l: the generic parser already owns -l for --log-level.
-#define HEADLESS_OPTIONS "S:R:L:"
+#define HEADLESS_OPTIONS "S:R:"
 static const char* const headlessUsage =
 	"Additional options:\n"
 	"  -S SWI           Run until specified SWI call before exiting\n"
 	"  -R REGISTER      General purpose register to return as exit code\n"
 #ifdef ENABLE_SCRIPTING
-	"  -L FILE          Run a script on start. Short alias for --script\n"
+
 	"  --script FILE    Run a script on start. Can be passed multiple times\n"
 #endif
 	;
@@ -196,7 +196,7 @@ int main(int argc, char * argv[]) {
 #ifdef ENABLE_SCRIPTING
 	struct mScriptContext scriptContext;
 
-	if (StringListSize(&headlessOpts.scripts)) {
+	if (args.nScripts > 0) {
 		mScriptContextInit(&scriptContext);
 		mScriptContextAttachStdlib(&scriptContext);
 		mScriptContextAttachImage(&scriptContext);
@@ -209,9 +209,9 @@ int main(int argc, char * argv[]) {
 
 		mScriptContextAttachCore(&scriptContext, core);
 
-		for (i = 0; i < StringListSize(&headlessOpts.scripts); ++i) {
-			if (!mScriptContextLoadFile(&scriptContext, *StringListGetPointer(&headlessOpts.scripts, i))) {
-				mLOG(STATUS, ERROR, "Failed to load script \"%s\"", *StringListGetPointer(&headlessOpts.scripts, i));
+		for (i = 0; i < args.nScripts; ++i) {
+			if (!mScriptContextLoadFile(&scriptContext, args.scripts[i])) {
+				mLOG(STATUS, ERROR, "Failed to load script \"%s\"", args.scripts[i]);
 				goto scriptsError;
 			}
 		}
@@ -234,7 +234,7 @@ scriptsError:
 	core->unloadROM(core);
 
 #ifdef ENABLE_SCRIPTING
-	if (StringListSize(&headlessOpts.scripts)) {
+	if (args.nScripts > 0) {
 		mScriptContextDeinit(&scriptContext);
 	}
 #endif
@@ -356,9 +356,7 @@ static bool _parseHeadlessOpts(struct mSubParser* parser, int option, const char
 	case 'R':
 		opts->returnCodeRegister = strdup(arg);
 		return true;
-	case 'L':
-		*StringListAppend(&opts->scripts) = strdup(arg);
-		return true;
+
 	default:
 		return false;
 	}

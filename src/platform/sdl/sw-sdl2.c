@@ -6,6 +6,7 @@
 #include "main.h"
 
 #include <mgba/core/core.h>
+#include <mgba/core/scripting.h>
 #include <mgba/core/thread.h>
 #include <mgba/core/version.h>
 
@@ -54,6 +55,11 @@ void mSDLSWRunloop(struct mSDLRenderer* renderer, void* user) {
 	SDL_Event event;
 
 	while (mCoreThreadIsActive(context)) {
+		// A script calling emu:stop() should end the process, the same way it
+		// does in the headless frontend. Without this the run loop spins forever.
+		if (mScriptShouldStop()) {
+			break;
+		}
 		while (SDL_PollEvent(&event)) {
 			mSDLHandleEvent(context, &renderer->player, &event);
 		}

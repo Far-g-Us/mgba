@@ -118,8 +118,27 @@ if(ENABLE_SCRIPTING)
 	endif()
 endif()
 
-add_executable(${BINARY_NAME}-sdl WIN32 ${PLATFORM_SRC} ${MAIN_SRC})
-set_target_properties(${BINARY_NAME}-sdl PROPERTIES COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES}")
+  # Not WIN32: the SDL frontend defines plain main(), and relying on SDL2main to
+  # supply WinMain depends on the archive being rescanned after the CRT startup
+  # object asks for it. A console subsystem build links directly and also keeps
+  # script output visible, which matters for automated runs.
+  add_executable(${BINARY_NAME}-sdl ${PLATFORM_SRC} ${MAIN_SRC})
+  # CMake was emitting --out-implib and --major-image-version here, which makes
+  # ld build an image with the DLL startup (crtexewin) and then fail on an
+  # undefined WinMain. An emulator executable wants none of that.
+  set_target_properties(${BINARY_NAME}-sdl PROPERTIES
+    WIN32_EXECUTABLE FALSE
+    ENABLE_EXPORTS FALSE
+    VERSION ""
+    SOVERSION "")
+# ENABLE_* defines are assembled per target, so scripting was silently off for
+  # this frontend: -L was accepted but no script ever ran. Adding the define here
+  # is what actually enables it, since this call replaces the property.
+  set(SDL_SCRIPTING_DEFINES "")
+  if(ENABLE_SCRIPTING)
+    set(SDL_SCRIPTING_DEFINES ENABLE_SCRIPTING)
+  endif()
+  set_target_properties(${BINARY_NAME}-sdl PROPERTIES COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES};${SDL_SCRIPTING_DEFINES}")
 target_link_libraries(${BINARY_NAME}-sdl ${BINARY_NAME} ${PLATFORM_LIBRARY} ${OPENGL_LIBRARY} ${OPENGLES2_LIBRARY})
 if(NOT WIN32)
 	set_target_properties(${BINARY_NAME}-sdl PROPERTIES OUTPUT_NAME ${BINARY_NAME})

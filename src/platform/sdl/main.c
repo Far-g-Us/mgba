@@ -16,10 +16,15 @@
 #endif
 
 #include <mgba/core/core.h>
-#include <mgba/core/config.h>
+#ifdef ENABLE_SCRIPTING
+#include <mgba/script/context.h>
+#include <mgba/script/base.h>
+#include <mgba/script/console.h>
+#endif
 #include <mgba/core/input.h>
 #include <mgba/core/serialize.h>
 #include <mgba/core/thread.h>
+#include <mgba/core/config.h>
 #include <mgba/internal/gba/input.h>
 
 #include <mgba/feature/commandline.h>
@@ -216,24 +221,24 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 #endif
 #ifdef ENABLE_DEBUGGERS
 	CLIDebuggerScriptEngineInstall(bridge);
-#endif
-#endif
+  #endif
+  #endif
 
-#ifdef ENABLE_DEBUGGERS
-	struct mDebugger debugger;
-	mDebuggerInit(&debugger);
-	bool hasDebugger = mArgumentsApplyDebugger(args, renderer->core, &debugger);
+  #ifdef ENABLE_DEBUGGERS
+  	struct mDebugger debugger;
+  	mDebuggerInit(&debugger);
+  	bool hasDebugger = mArgumentsApplyDebugger(args, renderer->core, &debugger);
 
-	if (hasDebugger) {
-		mDebuggerAttach(&debugger, renderer->core);
-		mDebuggerEnter(&debugger, DEBUGGER_ENTER_MANUAL, NULL);
-#ifdef ENABLE_SCRIPTING
-		mScriptBridgeSetDebugger(bridge, &debugger);
-#endif
-	} else {
-		mDebuggerDeinit(&debugger);
-	}
-#endif
+  	if (hasDebugger) {
+  		mDebuggerAttach(&debugger, renderer->core);
+  		mDebuggerEnter(&debugger, DEBUGGER_ENTER_MANUAL, NULL);
+  #ifdef ENABLE_SCRIPTING
+  		mScriptBridgeSetDebugger(bridge, &debugger);
+  #endif
+  	} else {
+  		mDebuggerDeinit(&debugger);
+  	}
+  #endif
 
 	renderer->audio.samples = renderer->core->opts.audioBuffers;
 	renderer->audio.sampleRate = 44100;

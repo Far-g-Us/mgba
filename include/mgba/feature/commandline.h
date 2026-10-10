@@ -24,6 +24,9 @@ struct mArguments {
 	int frameskip;
 
 	struct Table configOverrides;
+#define MGBA_MAX_SCRIPTS 16
+	char* scripts[MGBA_MAX_SCRIPTS];
+	int nScripts;
 
 	bool debugAtStart;
 	bool debugCli;

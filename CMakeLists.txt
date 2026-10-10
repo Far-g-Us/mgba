@@ -212,7 +212,13 @@ endif()
 set(OS_DEFINES)
 if(WIN32)
 	set(WIN32_VERSION "${LIB_VERSION_MAJOR},${LIB_VERSION_MINOR},${LIB_VERSION_PATCH}")
-	set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+	# Only meaningful when libmgba is built shared. Enabling it unconditionally
+	# makes CMake mark every linked executable as export-enabled, which adds
+	# --out-implib and --major-image-version; ld then uses the DLL startup
+	# (crtexewin) and the SDL executable fails on an undefined WinMain.
+	if(BUILD_SHARED)
+		set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+	endif()
 	if(MSVC)
 		add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 		add_definitions(-D_UNICODE -DUNICODE)

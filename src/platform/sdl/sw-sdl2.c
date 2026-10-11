@@ -79,7 +79,13 @@ struct mCoreThread* context = user;
 }
 
 void mSDLSWDeinit(struct mSDLRenderer* renderer) {
-	if (renderer->ratio > 1) {
-		free(renderer->outputBuffer);
-	}
+	UNUSED(renderer);
+	// renderer->outputBuffer does not belong to us here. In this backend it comes
+	// from SDL_LockTexture, which hands back memory the texture owns, and SDL
+	// releases it on SDL_UnlockTexture or SDL_DestroyTexture. Calling free() on
+	// it corrupts the heap, which shows up as 0xC0000374 when the process exits.
+	//
+	// The other renderers do own their buffer: gl-sdl.c, gles2-sdl.c and
+	// sw-sdl1.c all allocate it themselves with malloc/_aligned_malloc and are
+	// right to free it. Only this one mixes the two ownership models up.
 }

@@ -282,8 +282,8 @@ except as listed below.
 | variant | state |
 |---|---|
 | `mgba-headless.exe` | works, fully static, scripting available |
-| `mgba-sdl.exe` | builds, scripting available |
-| `mGBA.exe` (Qt) | does not start, compiler ABI mismatch |
+| `mgba-sdl.exe` | works, fully static, scripting and screenshots available |
+| `mGBA.exe` (Qt) | works, needs Qt beside it, scripting available |
 
 No other platform (Linux, macOS, consoles) has been built or verified from this
 fork. Everything below applies to Windows only.
@@ -350,15 +350,15 @@ endianness. On bytes `DE AD BE EF` they yield `0xADDE` and `0xEFBEADDE`.
 
 ### Tests
 
-`tools/mgba-headless/tests.lua` covers the new methods: 48 checks, 0 failures.
-Run it with:
+`tools/mgba-headless/tests.lua` covers the new methods: 47 checks, 0 failures,
+or 50 with `MGBA_TEST_SCREENSHOT=1`. Run it with:
 
 ```cmd
 mgba-headless.exe -L tests.lua "path\to\game.gba"
 ```
 
-All three frontends pass it: `mgba-headless.exe`, `mgba-sdl.exe` and `mgba.exe`.
-Set `MGBA_TEST_SCREENSHOT=1` to include the two screenshot checks.
+All three frontends pass it. Note that the exit code is not a pass signal:
+`emu:stop()` ends the process with 0 whatever the result, so read the report.
 
 ### Debugger
 

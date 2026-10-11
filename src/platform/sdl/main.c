@@ -235,26 +235,28 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		return 1;
 	}
 mCoreAutoloadSave(renderer->core);
-	// The headless frontend resets here too. Without it the CPU's dispatch
-	// tables are still unset, and a script that drives emulation (runFrame,
-	// step, frameCycles) faults on a NULL read inside ARMRunLoop. The normal
-	// SDL run loop only survives this because the core thread resets lazily on
-	// its first execution, which is too late for a script.
-	renderer->core->reset(renderer->core);
-	mArgumentsApplyFileLoads(args, renderer->core);
-
 #ifdef ENABLE_SCRIPTING
 	if (args->nScripts > 0) {
-		// A script with -L put us on the software renderer, whose framebuffer
-		// the init above already handed to the core. The GBA core associates its
-		// software renderer only when hwaccelVideo is reloaded, and that branch
-		// also requires the framebuffer to exist; until then the dummy renderer
-		// stays in place and its getPixels is an empty function, so a script
-		// screenshot comes back with no pixels. This has to happen after
-		// mCoreLoadFile: before that the core has nothing to reconfigure.
+		// A script that drives emulation needs the core reset before it runs:
+		// the CPU dispatch tables are still unset at this point, and a script
+		// calling runFrame/step faults on a NULL read inside ARMRunLoop. The
+		// normal SDL run loop never notices, because mCoreThreadStart resets on
+		// its own a few lines further down, which is too late for a script.
+		//
+		// This has to precede mArgumentsApplyFileLoads, or the reset would wipe
+		// whatever the patches and savestate just applied.
+		renderer->core->reset(renderer->core);
+		// -L also put us on the software renderer, whose framebuffer the init
+		// above already handed to the core. The GBA core associates its software
+		// renderer only when hwaccelVideo is reloaded, and that branch requires
+		// the framebuffer to exist; until then the dummy renderer stays in place
+		// and its getPixels is an empty function, so a script screenshot comes
+		// back with no pixels. After mCoreLoadFile: before that there is nothing
+		// to reconfigure.
 		renderer->core->reloadConfigOption(renderer->core, "hwaccelVideo", &renderer->core->config);
 	}
 #endif
+	mArgumentsApplyFileLoads(args, renderer->core);
 #ifdef ENABLE_SCRIPTING
 	struct mScriptBridge* bridge = mScriptBridgeCreate();
 #ifdef ENABLE_PYTHON

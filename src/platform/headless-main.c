@@ -97,6 +97,12 @@ int main(int argc, char * argv[]) {
 	};
 
 	struct mArguments args;
+#ifdef ENABLE_SCRIPTING
+	// Declared up here, not next to the allocation: several error paths jump to
+	// loadError, which frees this, and jumping over an initialiser leaves it
+	// holding whatever was on the stack.
+	mColor* videoBuffer = NULL;
+#endif
 	bool parsed = mArgumentsParse(&args, argc, argv, &subparser, 1);
 	if (!args.fname) {
 		parsed = false;
@@ -196,7 +202,6 @@ int main(int argc, char * argv[]) {
 #ifdef ENABLE_SCRIPTING
 	unsigned videoWidth = 0;
 	unsigned videoHeight = 0;
-	mColor* videoBuffer = NULL;
 	// A headless run never hands the core a framebuffer, so the renderer has
 	// nowhere to draw. A screenshot taken then encodes NULL and comes out as a
 	// 33-byte empty PNG. Give the core one before any frame runs and it fills

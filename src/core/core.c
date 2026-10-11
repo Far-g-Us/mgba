@@ -464,6 +464,14 @@ void* mCoreGetMemoryBlockMasked(struct mCore* core, uint32_t start, size_t* size
 		return NULL;
 	}
 	uint8_t* out = core->getMemoryBlock(core, block->id, size);
+	// getMemoryBlock may legitimately fail for a mapped block: the GB core has
+	// no case for GB_BASE_IO, and GBA returns NULL for save RAM before a save is
+	// initialised. Adding an offset to NULL would hand callers a non-NULL
+	// pointer into low memory, which the scripting fast paths then dereference.
+	if (!out) {
+		*size = 0;
+		return NULL;
+	}
 	out += start - block->start;
 	*size -= start - block->start;
 	return out;

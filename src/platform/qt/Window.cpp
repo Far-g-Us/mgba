@@ -251,23 +251,33 @@ void Window::argumentsPassed() {
 	}
 #endif
 
-	int scale = m_config->graphicsOpts()->multiplier;
-	if (scale <= 0) {
-		scale = DEFAULT_VIDEO_SCALE;
-	}
-	m_savedScale = scale;
+	const mCoreOptions* opts = m_config->options();
+	if (opts->width && opts->height) {
+		// loadConfig already adopted the saved size and decided it is worth
+		// keeping. Overwriting it here is what made a window the user had
+		// deliberately resized snap back to the default scale on every launch.
+		if (isVisible()) {
+			resizeFrame(m_initialSize);
+		}
+	} else {
+		int scale = m_config->graphicsOpts()->multiplier;
+		if (scale <= 0) {
+			scale = DEFAULT_VIDEO_SCALE;
+		}
+		m_savedScale = scale;
 
 #if defined(M_CORE_GBA)
-	QSize size(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS);
+		QSize size(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS);
 #elif defined(M_CORE_GB)
-	QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
+		QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
 #endif
-	m_initialSize = size * m_savedScale;
-	// argumentsPassed runs after the window is on screen, so showEvent has
-	// already had its chance to apply m_initialSize and the window stays at its
-	// minimum. Apply it here too when that has happened.
-	if (isVisible()) {
-		resizeFrame(m_initialSize);
+		m_initialSize = size * m_savedScale;
+		// argumentsPassed runs after the window is on screen, so showEvent has
+		// already had its chance to apply m_initialSize and the window stays at
+		// its minimum. Apply it here too when that has happened.
+		if (isVisible()) {
+			resizeFrame(m_initialSize);
+		}
 	}
 
 	if (args->fname) {

@@ -170,6 +170,10 @@ void ScriptingController::reset() {
 	mScriptContextDeinit(&m_scriptContext);
 	m_engines.clear();
 	m_activeEngine = nullptr;
+	// The context was just torn down, so init() has to be allowed to build it
+	// again. Without this it returns early and every script — autorun and -L
+	// alike — stays dead for the rest of the session.
+	m_initialized = false;
 	init();
 }
 

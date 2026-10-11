@@ -171,13 +171,19 @@ struct mScriptBreakpointName {
 	uint8_t subtype;
 };
 
-struct mScriptBreakpoint {
+#define SCRIPT_BREAKPOINT_MAGIC 0x42504D47u
+
+	struct mScriptBreakpoint {
 	ssize_t id;
 	struct mScriptBreakpointName name;
 	struct Table callbacks;
-	// TODO: Handle re-entry
+// TODO: Handle re-entry
 	bool invalidated;
 	bool inUse;
+	// Catches a second free. The breakpoints hash table owns these objects and
+	// frees them through _freeBreakpoint, so releasing must go by removing the
+	// entry, never by calling _freeBreakpoint directly.
+	uint32_t magic;
 };
 
 struct mScriptCoreAdapter;
@@ -188,7 +194,20 @@ struct mScriptDebugger {
 	struct Table cbidMap;
 	struct Table bpidMap;
 	int64_t nextBreakpoint;
+	struct mScriptDebuggerEvent* pending;
+	size_t pendingCount;
+	size_t pendingCapacity;
+	size_t pendingDropped;
 	bool reentered;
+};
+
+	struct mScriptDebuggerEvent {
+	// Identity, not ownership: a point can be cleared while events for it are
+	// still queued, and a stored pointer would dangle. Resolved through bpidMap
+	// at delivery; an event whose point is gone is counted, not delivered.
+	ssize_t pointId;
+	enum mDebuggerEntryReason reason;
+	struct mDebuggerEntryInfo info;
 };
 #endif
 
@@ -952,6 +971,8 @@ static void _freeBreakpoint(void* bp) {
 		// TODO: Refcount this?
 		return;
 	}
+	mASSERT(point->magic == SCRIPT_BREAKPOINT_MAGIC);
+	point->magic = 0;
 	HashTableDeinit(&point->callbacks);
 	free(bp);
 }
@@ -970,6 +991,7 @@ static struct mScriptBreakpoint* _ensureBreakpoint(struct mScriptDebugger* debug
 		return point;
 	}
 	point = calloc(1, sizeof(*point));
+	point->magic = SCRIPT_BREAKPOINT_MAGIC;
 	point->id = module->p->platform->setBreakpoint(module->p->platform, module, breakpoint);
 	point->name = name;
 	HashTableInit(&point->callbacks, 0, (void (*)(void*)) mScriptValueDeref);
@@ -992,6 +1014,7 @@ static struct mScriptBreakpoint* _ensureWatchpoint(struct mScriptDebugger* debug
 		return point;
 	}
 	point = calloc(1, sizeof(*point));
+	point->magic = SCRIPT_BREAKPOINT_MAGIC;
 	point->id = module->p->platform->setWatchpoint(module->p->platform, module, watchpoint);
 	point->name = name;
 	HashTableInit(&point->callbacks, 0, (void (*)(void*)) mScriptValueDeref);
@@ -1040,11 +1063,18 @@ static void _runCallbacks(struct mScriptDebugger* debugger, struct mScriptBreakp
 		}
 	}
 
-	HashTableDeinit(&visited);
+HashTableDeinit(&visited);
 	point->inUse = false;
 
 	if (!HashTableSize(&point->callbacks)) {
-		_freeBreakpoint(point);
+		// The breakpoints table owns this object and frees it through
+		// _freeBreakpoint, so releasing means removing the entry. Calling
+		// _freeBreakpoint here freed it while the table still held the pointer,
+		// and the teardown freed it a second time.
+		struct mScriptCoreAdapter* adapter = ((struct mScriptDebugger*) debugger)->p;
+		HashTableRemoveBinary(&adapter->debugger.bpidMap, &point->id, sizeof(point->id));
+		struct mScriptBreakpointName name = point->name;
+		HashTableRemoveBinary(&adapter->debugger.breakpoints, &name, sizeof(name));
 	}
 }
 
@@ -1058,9 +1088,12 @@ static void _scriptDebuggerInit(struct mDebuggerModule* debugger) {
 	HashTableInit(&scriptDebugger->cbidMap, 0, NULL);
 	HashTableInit(&scriptDebugger->bpidMap, 0, NULL);
 }
-
-static void _scriptDebuggerDeinit(struct mDebuggerModule* debugger) {
+	static void _scriptDebuggerDeinit(struct mDebuggerModule* debugger) {
 	struct mScriptDebugger* scriptDebugger = (struct mScriptDebugger*) debugger;
+	free(scriptDebugger->pending);
+	scriptDebugger->pending = NULL;
+	scriptDebugger->pendingCount = 0;
+	scriptDebugger->pendingCapacity = 0;
 	HashTableDeinit(&scriptDebugger->cbidMap);
 	HashTableDeinit(&scriptDebugger->bpidMap);
 	HashTableDeinit(&scriptDebugger->breakpoints);
@@ -1075,22 +1108,22 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	UNUSED(debugger);
 }
 
-static void _scriptDebuggerEntered(struct mDebuggerModule* debugger, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
-	struct mScriptDebugger* scriptDebugger = (struct mScriptDebugger*) debugger;
-	struct mScriptBreakpoint* point;
-	switch (reason) {
-	case DEBUGGER_ENTER_BREAKPOINT:
-	case DEBUGGER_ENTER_WATCHPOINT:
-		point = HashTableLookupBinary(&scriptDebugger->bpidMap, &info->pointId, sizeof(info->pointId));
-		break;
-	default:
-		return;
-	}
-
-	if (scriptDebugger->reentered) {
-		return;
-	}
-
+	// Build the Lua info table for one debugger event and hand it to the callbacks.
+//
+	// This must only run outside the debugger hook. Calling into Lua while the CPU
+// is mid-instruction leaves the script context unusable from then on: the next
+// emu: call of any kind fails with "Function called from invalid context".
+// Measured on Radical Red with a watchpoint over 0x06000000-0x060000FF, which
+// lands 545 hits in frame 13. Building the table and freeing it inside the hook
+// is fine; calling _runCallbacks there is what breaks the context, and the same
+// run survives 20 frames once the call is deferred.
+	static void _dispatchDebuggerEvent(struct mScriptDebugger* scriptDebugger, struct mScriptBreakpoint* point, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
+	// Deliberately unreferenced and never freed here. Lua receives the table as a
+	// userdata that aliases this struct, and freeing underneath it corrupts the
+	// heap: measured as STATUS_HEAP_CORRUPTION on the 19-test scripting suite
+	// when this was allocated with refs = 1 and dereferenced afterwards. The
+	// cost is one leaked struct Table per delivered event, which a frame-capped
+	// tracer keeps bounded.
 	struct mScriptValue cbInfo = {
 		.refs = mSCRIPT_VALUE_UNREF,
 		.flags = 0,
@@ -1133,9 +1166,90 @@ static void _scriptDebuggerEntered(struct mDebuggerModule* debugger, enum mDebug
 	}
 
 	_runCallbacks(scriptDebugger, point, &cbInfo);
+}
 
-	cbInfo.type->free(&cbInfo);
+	// A watchpoint over a whole region of VRAM produces thousands of hits in a
+// single frame: 4 KiB at 0x06000000 gives 7148. Queue them per frame and drop
+// past the cap so a pathological range cannot exhaust memory.
+	#define SCRIPT_DEBUGGER_MAX_PENDING 65536
+
+static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
+		// Detach the batch before dispatching. A callback may run frames or
+		// flush again; either way it must not see this batch, and it must not be
+		// able to realloc the array out from under the loop.
+		struct mScriptDebuggerEvent* pending = scriptDebugger->pending;
+		size_t count = scriptDebugger->pendingCount;
+		scriptDebugger->pending = NULL;
+		scriptDebugger->pendingCount = 0;
+		scriptDebugger->pendingCapacity = 0;
+
+		// Chronological order: a tracer asking "which write left this value"
+		// needs the hits as they happened, not as the queue unwound.
+		size_t i = 0;
+		while (i < count) {
+			struct mScriptDebuggerEvent* event = &pending[i++];
+			struct mScriptBreakpoint* point =
+				HashTableLookupBinary(&scriptDebugger->bpidMap, &event->pointId, sizeof(event->pointId));
+			if (!point) {
+				// The breakpoint was cleared after this event was recorded, so
+				// there is no callback to run. Counted, not silently dropped.
+				++scriptDebugger->pendingDropped;
+				continue;
+			}
+			_dispatchDebuggerEvent(scriptDebugger, point, event->reason, &event->info);
+		}
+		free(pending);
+	}
+
+	static void _scriptDebuggerEntered(struct mDebuggerModule* debugger, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
+	struct mScriptDebugger* scriptDebugger = (struct mScriptDebugger*) debugger;
+	// No lookup here: the event records the id and the delivery resolves it,
+	// so a breakpoint cleared in between cannot leave a dangling pointer behind.
+	switch (reason) {
+	case DEBUGGER_ENTER_BREAKPOINT:
+	case DEBUGGER_ENTER_WATCHPOINT:
+		break;
+	default:
+		return;
+	}
+
+	if (scriptDebugger->reentered) {
+		return;
+	}
+
+	if (scriptDebugger->pendingCount >= SCRIPT_DEBUGGER_MAX_PENDING) {
+		++scriptDebugger->pendingDropped;
+	} else {
+		if (scriptDebugger->pendingCount == scriptDebugger->pendingCapacity) {
+			size_t capacity = scriptDebugger->pendingCapacity ? scriptDebugger->pendingCapacity * 2 : 64;
+			scriptDebugger->pending = realloc(scriptDebugger->pending, capacity * sizeof(*scriptDebugger->pending));
+			scriptDebugger->pendingCapacity = capacity;
+		}
+		struct mScriptDebuggerEvent* event = &scriptDebugger->pending[scriptDebugger->pendingCount++];
+		event->pointId = info->pointId;
+		event->reason = reason;
+		event->info = *info;
+		// target is only meaningful inside the hook and nothing at delivery
+		// reads it, so do not carry a pointer a frame forward.
+		event->info.target = NULL;
+	}
+
 	debugger->isPaused = false;
+}
+
+	// Deliver everything the debugger queued so far. A script calls this through
+// emu:flushDebuggerEvents(), which is a normal Lua call and therefore a safe
+// place to enter Lua; the debugger hook is not.
+	static void _mScriptDebuggerFlush(struct mScriptCoreAdapter* adapter) {
+	if (!adapter->debugger.d.p || !adapter->debugger.pendingCount) {
+		return;
+	}
+	_flushDebuggerEvents(&adapter->debugger);
+	adapter->debugger.pendingCount = 0;
+}
+
+	static void _mScriptCoreAdapterFlushDebugger(struct mScriptCoreAdapter* adapter) {
+	_mScriptDebuggerFlush(adapter);
 }
 
 static void _scriptDebuggerCustom(struct mDebuggerModule* debugger) {
@@ -1237,10 +1351,14 @@ static bool _mScriptCoreAdapterClearBreakpoint(struct mScriptCoreAdapter* adapte
 	HashTableRemoveBinary(&adapter->debugger.cbidMap, &cbid, sizeof(cbid));
 	HashTableRemoveBinary(&point->callbacks, &cbid, sizeof(cbid));
 
-	if (!HashTableSize(&point->callbacks)) {
+if (!HashTableSize(&point->callbacks)) {
 		struct mDebuggerModule* module = &adapter->debugger.d;
 		module->p->platform->clearBreakpoint(module->p->platform, point->id);
 
+		// bpidMap indexes by platform breakpoint id and owns nothing, so its
+		// entry has to go before the point does. Leaving it behind meant the
+		// next hit on that id looked up a freed pointer.
+		HashTableRemoveBinary(&adapter->debugger.bpidMap, &point->id, sizeof(point->id));
 		struct mScriptBreakpointName name = point->name;
 		HashTableRemoveBinary(&adapter->debugger.breakpoints, &name, sizeof(name));
 	}
@@ -1398,8 +1516,11 @@ mSCRIPT_DECLARE_STRUCT(mScriptCoreAdapter);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, W(mCore), _get, _mScriptCoreAdapterGet, 1, CHARP, name);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, _deinit, _mScriptCoreAdapterDeinit, 0);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, reset, _mScriptCoreAdapterReset, 0);
-mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, WTABLE, setRotationCallbacks, _mScriptCoreAdapterSetRotationCbTable, 1, WTABLE, cbTable);
-mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, setSolarSensorCallback, _mScriptCoreAdapterSetLuminanceCb, 1, WRAPPER, callback);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, WTABLE, setRotationCallbacks, _mScriptCoreAdapterSetRotationCbTable, 1, WTABLE, cbTable);	mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, setSolarSensorCallback, _mScriptCoreAdapterSetLuminanceCb, 1, WRAPPER, callback);
+// Delivers debugger events collected during the frames that have run so far.
+// Calling into Lua from the debugger hook breaks the script context, so the
+// events are queued and a script drains them at a point where it is safe.
+mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, flushDebuggerEvents, _mScriptCoreAdapterFlushDebugger, 0);
 
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, U32, read8, _mScriptCoreAdapterRead8, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, U32, read16, _mScriptCoreAdapterRead16, 1, U32, address);
@@ -1487,9 +1608,9 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 	mSCRIPT_DEFINE_DOCSTRING(
 		"Set a watchpoint in a given range of a given type. Note that the range is exclusive on the end, "
 		"as though you've added the size, i.e. a 4-byte watch would specify the maximum as the minimum address + 4"
-	)
-	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
+	)	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
 #endif
+		mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)
 mSCRIPT_DEFINE_END;

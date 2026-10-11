@@ -292,6 +292,13 @@ argsExit:
 	StringListDeinit(&headlessOpts.scripts);
 	mArgumentsDeinit(&args);
 
+	// A script that called emu:exit(code) decides the outcome. Without it the
+	// old behaviour stands, which is that a clean run exits 0 whatever the
+	// script found -- a test script has to set the code itself for CI to read.
+	if (cleanExit && mScriptGetExitCode() != 0) {
+		return mScriptGetExitCode();
+	}
+
 	return cleanExit ? _exitCode : uncleanExit;
 }
 

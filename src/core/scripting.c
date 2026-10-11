@@ -413,11 +413,54 @@ static void _mScriptCoreStop(struct mCore* core) {
 	mScriptRequestStop();
 }
 
+// emu:stop() cannot report failure: it ends the run loop, and headless then
+// exits 0 whether or not the checks passed, so every automation has to scrape a
+// report file to find out what happened. emu:exit(code) sets the code a
+// front-end returns instead, which is what a CI step needs.
+//
+// This is a separate method rather than an optional argument on stop() so that
+// existing scripts keep their current meaning.
+static int _scriptExitCode;
+
+void mScriptSetExitCode(int code) {
+	_scriptExitCode = code;
+}
+
+int mScriptGetExitCode(void) {
+	return _scriptExitCode;
+}
+
+static void _mScriptCoreExit(struct mCore* core, int32_t code) {
+	UNUSED(core);
+	mScriptSetExitCode(code);
+	mScriptRequestStop();
+}
+
 // Presses a key and leaves it held, so a script can walk menus with one call
 // per input instead of composing a mask by hand.
 static void _mScriptCorePressKey(struct mCore* core, int32_t key) {
 	if (key >= 0 && key < 32) {
 		core->addKeys(core, 1 << key);
+	}
+}
+
+// Fill buffer with `chunk` bytes from `address`. When the whole chunk sits inside
+// one mapped block it is memcpy'd out of the block's own pointer, and only a
+// chunk that does not fit falls back to one busRead8 per byte.
+//
+// This is what makes a range crossing a block boundary fast: GBA work RAM is
+// 256 KiB, so a chunk this size lands inside it almost every time, and the
+// per-byte bus call disappears without special-casing where the boundary is.
+static void _readChunk(struct mCore* core, uint32_t address, uint32_t chunk, uint8_t* buffer) {
+	size_t avail = 0;
+	const uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
+	if (direct && chunk <= avail) {
+		memcpy(buffer, direct, chunk);
+		return;
+	}
+	uint32_t i;
+	for (i = 0; i < chunk; ++i) {
+		buffer[i] = core->busRead8(core, address + i);
 	}
 }
 
@@ -427,8 +470,9 @@ static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint3
 	// running value is passed through untouched and the seed is 0.
 	uint32_t crc = 0;
 	uint32_t done = 0;
-	// Same fast path as findBytes: a mapped range can be hashed straight out of
-	// memory, with no per-byte busRead8 call at all.
+	// A range inside a single block is hashed straight out of memory, with no
+	// copy at all. Anything else goes through _readChunk, which still avoids the
+	// per-byte bus call for as much of it as fits in the block it lands in.
 	size_t avail = 0;
 	const uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
 	if (direct && length <= avail) {
@@ -436,13 +480,10 @@ static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint3
 	}
 	while (done < length) {
 		uint32_t chunk = length - done;
-		uint32_t i;
 		if (chunk > sizeof(buffer)) {
 			chunk = sizeof(buffer);
 		}
-		for (i = 0; i < chunk; ++i) {
-			buffer[i] = core->busRead8(core, address + done + i);
-		}
+		_readChunk(core, address + done, chunk, buffer);
 		crc = crc32(crc, buffer, chunk);
 		done += chunk;
 	}
@@ -457,15 +498,15 @@ static int32_t _mScriptCoreDumpRange(struct mCore* core, const char* path, uint3
 	if (!vf) {
 		return -1;
 	}
-	while (done < length) {
+while (done < length) {
 		uint32_t chunk = length - done;
-		uint32_t i;
 		if (chunk > sizeof(buffer)) {
 			chunk = sizeof(buffer);
 		}
-		for (i = 0; i < chunk; ++i) {
-			buffer[i] = core->busRead8(core, address + done + i);
-		}
+		// Dumping is what the extraction tooling leans on hardest, so it gets the
+		// same block-pointer read as hashRange: a chunk landing inside a mapped
+		// block is copied out rather than fetched one bus call per byte.
+		_readChunk(core, address + done, chunk, buffer);
 		if (vf->write(vf, buffer, chunk) != (ssize_t) chunk) {
 			vf->close(vf);
 			return -2;
@@ -678,6 +719,9 @@ mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, step, 0);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, setKeys, 1, U32, keys);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, stop, _mScriptCoreStop, 0);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, pressKey, _mScriptCorePressKey, 1, S32, key);
+	// 0 means "no opinion", so a script that never calls exit leaves the front-end
+	// to decide the code as it did before.
+	mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, exit, _mScriptCoreExit, 1, S32, code);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, addKeys, 1, U32, keys);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, clearKeys, 1, U32, keys);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mCore, addKey, _mScriptCoreAddKey, 1, S32, key);
@@ -761,6 +805,8 @@ mSCRIPT_DEFINE_STRUCT(mCore)
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, stop)
 	mSCRIPT_DEFINE_DOCSTRING("Press and hold a key (A=0, B=1, SELECT=2, START=3)")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, pressKey)
+	mSCRIPT_DEFINE_DOCSTRING("Stop emulation and exit with the given code, for CI to read directly")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, exit)
 	mSCRIPT_DEFINE_DOCSTRING("Add a single key to the currently active key list")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, addKey)
 	mSCRIPT_DEFINE_DOCSTRING("Add a bitmask of keys to the currently active key list")

@@ -64,6 +64,12 @@ void mScriptContextDetachCore(struct mScriptContext*);
 void mScriptRequestStop(void);
 bool mScriptShouldStop(void);
 
+// Set from a script via emu:exit(code), so a front-end can return that code
+// instead of always reporting success. Zero means the script expressed no
+// opinion and the front-end decides as before.
+void mScriptSetExitCode(int code);
+int mScriptGetExitCode(void);
+
 CXX_GUARD_END
 
 #endif

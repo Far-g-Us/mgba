@@ -178,9 +178,24 @@ int main(int argc, char * argv[]) {
 	mDebuggerInit(&debugger);
 	bool hasDebugger = mArgumentsApplyDebugger(&args, core, &debugger);
 
-	if (hasDebugger) {
+	// Attaching a debugger and running under it are two different things.
+	//
+	// The scripting side installs its own DEBUGGER_CUSTOM module on the first
+	// emu:setBreakpoint, emu:setWatchpoint or emu:setRangeWatchpoint, but
+	// _setupDebugger() refuses to do anything while core->debugger is NULL. So a
+	// scripted run needs the debugger attached.
+	//
+	// It must NOT then run under the debugger loop: that loop watches
+	// debugger.state for DEBUGGER_SHUTDOWN and never looks at mScriptShouldStop(),
+	// so emu:stop() and emu:exit() would not stop the emulation. attachDebugger
+	// is what the scripts need; hasDebugger stays reserved for -g and the CLI.
+	bool attachDebugger = hasDebugger || args.nScripts > 0;
+
+	if (attachDebugger) {
 		mDebuggerAttach(&debugger, core);
-		mDebuggerEnter(&debugger, DEBUGGER_ENTER_MANUAL, NULL);
+		if (hasDebugger) {
+			mDebuggerEnter(&debugger, DEBUGGER_ENTER_MANUAL, NULL);
+		}
 	} else {
 		mDebuggerDeinit(&debugger);
 	}

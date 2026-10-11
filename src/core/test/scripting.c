@@ -319,8 +319,11 @@ M_TEST_DEFINE(screenshot) {
 	core->runFrame(core);
 
 	TEST_PROGRAM("im = emu:screenshotToImage()");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(im)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(im.width >= 160)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(im.height >= 144)");
 
 	free(buffer);
@@ -341,7 +344,9 @@ M_TEST_DEFINE(readWriteRegisterGBA) {
 
 	TEST_PROGRAM("emu:writeRegister('r0', 0x12345678)");
 	TEST_PROGRAM("emu:writeRegister('r16', 0x12345678)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('r0') == 0x12345678)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('r16') == nil)");
 
 	mScriptContextDeinit(&context);
@@ -361,17 +366,24 @@ M_TEST_DEFINE(readWriteRegisterGB) {
 	mScriptContextAttachCore(&context, core);
 
 	TEST_PROGRAM("emu:writeRegister('b', 0x1234)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('b') == 0x34)");
 	TEST_PROGRAM("emu:writeRegister('c', 0x5678)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('c') == 0x78)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('bc') == 0x3478)");
 
 	TEST_PROGRAM("emu:writeRegister('bc', 0x1234)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('b') == 0x12)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('c') == 0x34)");
 
 	TEST_PROGRAM("emu:writeRegister('bc', 0x89ab)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('b') == 0x89)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:readRegister('c') == 0xab)");
 
 	mScriptContextDeinit(&context);
@@ -427,6 +439,7 @@ M_TEST_DEFINE(basicBreakpointGBA) {
 		"end"
 	);
 	TEST_PROGRAM("cbid = emu:setBreakpoint(bkpt, 0x020000C4)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid == 1)");
 
 	int i;
@@ -435,7 +448,9 @@ M_TEST_DEFINE(basicBreakpointGBA) {
 	}
 
 	assert_int_equal(debugger.state, DEBUGGER_RUNNING);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit >= 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == 0x020000C4)");
 
 	mScriptContextDeinit(&context);
@@ -469,6 +484,7 @@ M_TEST_DEFINE(basicBreakpointGB) {
 		"end"
 	);
 	TEST_PROGRAM("cbid = emu:setBreakpoint(bkpt, 0xF0)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid == 1)");
 
 	int i;
@@ -477,7 +493,9 @@ M_TEST_DEFINE(basicBreakpointGB) {
 	}
 
 	assert_int_equal(debugger.state, DEBUGGER_RUNNING);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit >= 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == 0xF0)");
 
 	mScriptContextDeinit(&context);
@@ -527,7 +545,9 @@ M_TEST_DEFINE(multipleBreakpoint) {
 	TEST_PROGRAM("cbid1 = emu:setBreakpoint(bkpt1, 0xF0)");
 	TEST_PROGRAM("cbid2 = emu:setBreakpoint(bkpt2, 0xF1)");
 #endif
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid1 == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid2 == 2)");
 
 	int i;
@@ -536,12 +556,17 @@ M_TEST_DEFINE(multipleBreakpoint) {
 	}
 
 	assert_int_equal(debugger.state, DEBUGGER_RUNNING);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit >= 101)");
 #ifdef M_CORE_GBA
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address >= 0x020000C4)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address <= 0x020000C8)");
 #else
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address >= 0xF0)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address <= 0xF1)");
 #endif
 
@@ -584,10 +609,15 @@ M_TEST_DEFINE(basicWatchpoint) {
 	);
 	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
 	lua->setGlobal(lua, "base", &base);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.READ))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base + 1, C.WATCHPOINT_TYPE.WRITE))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base + 2, C.WATCHPOINT_TYPE.RW))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base + 3, C.WATCHPOINT_TYPE.WRITE_CHANGE))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 
 	uint8_t value;
@@ -601,17 +631,26 @@ M_TEST_DEFINE(basicWatchpoint) {
 		"newValue = nil\n"
 		"accessType = nil\n");
 	value = core->rawRead8(core, RAM_BASE, -1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
 	core->busWrite8(core, RAM_BASE, value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
 	core->busWrite8(core, RAM_BASE, ~value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(width == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == nil)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(accessType == C.WATCHPOINT_TYPE.READ)");
 
 	// Write
@@ -623,19 +662,30 @@ M_TEST_DEFINE(basicWatchpoint) {
 		"newValue = nil\n"
 		"accessType = nil\n");
 	value = core->rawRead8(core, RAM_BASE + 1, -1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE + 1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busWrite8(core, RAM_BASE + 1, value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == 2)");
 	core->busWrite8(core, RAM_BASE + 1, ~value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base + 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(width == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == -3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(accessType == C.WATCHPOINT_TYPE.WRITE)");
 
 	// RW
@@ -647,22 +697,36 @@ M_TEST_DEFINE(basicWatchpoint) {
 		"newValue = nil\n"
 		"accessType = nil\n");
 	value = core->rawRead8(core, RAM_BASE + 2, -1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE + 2);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(accessType == C.WATCHPOINT_TYPE.READ)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == nil)");
 	core->busWrite8(core, RAM_BASE + 2, value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == 3)");
 	core->busWrite8(core, RAM_BASE + 2, ~value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base + 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(width == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == -4)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(accessType == C.WATCHPOINT_TYPE.WRITE)");
 
 	// Change
@@ -674,17 +738,26 @@ M_TEST_DEFINE(basicWatchpoint) {
 		"newValue = nil\n"
 		"accessType = nil\n");
 	value = core->rawRead8(core, RAM_BASE + 3, -1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE + 3);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busWrite8(core, RAM_BASE + 3, value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busWrite8(core, RAM_BASE + 3, ~value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base + 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(width == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(oldValue == 4)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(newValue == -5)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(accessType == C.WATCHPOINT_TYPE.WRITE)");
 
 	mScriptContextDeinit(&context);
@@ -711,14 +784,18 @@ M_TEST_DEFINE(watchpointReentrant) {
 	);
 	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
 	lua->setGlobal(lua, "base", &base);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.READ))");
 
 	TEST_PROGRAM("hit = 0");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
 	TEST_PROGRAM("emu:read8(base)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)");
 
 	mScriptContextDeinit(&context);
@@ -747,13 +824,18 @@ M_TEST_DEFINE(removeBreakpoint) {
 	lua->setGlobal(lua, "base", &base);
 	TEST_PROGRAM("cbid = emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.READ)");
 
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:clearBreakpoint(cbid))");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)");
 
 	mScriptContextDeinit(&context);
@@ -792,7 +874,9 @@ M_TEST_DEFINE(overlappingBreakpoint) {
 	TEST_PROGRAM("cbid1 = emu:setBreakpoint(bkpt1, 0xF0)");
 	TEST_PROGRAM("cbid2 = emu:setBreakpoint(bkpt2, 0xF0)");
 #endif
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid1 == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(cbid2 == 2)");
 
 	int i;
@@ -801,15 +885,19 @@ M_TEST_DEFINE(overlappingBreakpoint) {
 	}
 
 	assert_int_equal(debugger.state, DEBUGGER_RUNNING);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit >= 101)");
 	TEST_PROGRAM("oldHit = hit");
 
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(emu:clearBreakpoint(cbid2))");
 
 	for (i = 0; i < 10; ++i) {
 		mDebuggerRun(&debugger);
 	}
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit - oldHit > 0)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit - oldHit < 100)");
 
 	mScriptContextDeinit(&context);
@@ -836,10 +924,15 @@ M_TEST_DEFINE(overlappingWatchpoint) {
 	);
 	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
 	lua->setGlobal(lua, "base", &base);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.READ))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.WRITE))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.RW))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setWatchpoint(bkpt, base, C.WATCHPOINT_TYPE.WRITE_CHANGE))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 
 	uint8_t value;
@@ -847,12 +940,16 @@ M_TEST_DEFINE(overlappingWatchpoint) {
 	// Read
 	TEST_PROGRAM("hit = 0");
 	value = core->rawRead8(core, RAM_BASE, -1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 2)"); // Read, RW
 	core->busWrite8(core, RAM_BASE, value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 4)"); // Write, RW
 	core->busWrite8(core, RAM_BASE, ~value);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 7)"); // Write, RW, change
 
 	mScriptContextDeinit(&context);
@@ -881,19 +978,28 @@ M_TEST_DEFINE(rangeWatchpoint) {
 	);
 	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
 	lua->setGlobal(lua, "base", &base);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setRangeWatchpoint(bkpt, base, base + 2, C.WATCHPOINT_TYPE.READ))");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(0 < emu:setRangeWatchpoint(bkpt, base + 1, base + 3, C.WATCHPOINT_TYPE.READ))");
 
 	// Read
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 0)");
 	core->busRead8(core, RAM_BASE);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 1)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base)");
 	core->busRead8(core, RAM_BASE + 1);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 3)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base + 1)");
 	core->busRead8(core, RAM_BASE + 2);
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 4)");
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(address == base + 2)");
 
 	mScriptContextDeinit(&context);

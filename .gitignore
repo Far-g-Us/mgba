@@ -1,8 +1,7 @@
 build*/
-bclean/
 bclean*/
-bqt/
-bqt/
+bqt*/
+bqt3/
 *.o
 *.obj
 *.a

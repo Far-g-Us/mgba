@@ -371,6 +371,13 @@ mCoreThreadJoin(&thread);
 	}
 #endif
 
+	// A script that called emu:exit(code) decides the outcome, so an automation can
+	// read the result from the exit code instead of scraping a report file. Zero
+	// means the script expressed no opinion, and didFail stands as before.
+	if (!didFail && mScriptGetExitCode() != 0) {
+		return mScriptGetExitCode();
+	}
+
 	return didFail;
 }
 

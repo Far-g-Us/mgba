@@ -338,21 +338,34 @@ endianness. On bytes `DE AD BE EF` they yield `0xADDE` and `0xEFBEADDE`.
 
 ### Known limitations
 
-- `emu:runFrame()` and `emu:frameCycles()` crash the Lua context, and `pcall`
-  does not catch it.
-- `emu:screenshot()` crashes the context too: scripts run before the core video
-  buffer is initialised. Not fixed.
-- `findBytes` and `hashRange` read through `busRead8` instead of the existing
-  `mCoreMemorySearch`, which is one to two orders of magnitude slower on a 32 MiB
-  scan. Not measured.
-- The Qt frontend does not start: Qt is built with MinGW-Builds GCC 13.1 while
-  this fork uses MSYS2 GCC 16.2, and the ABIs are incompatible.
+- `emu:frameCycles()` takes no arguments and reports the cycle count for a frame;
+  it is not a way to run a number of cycles. Use `emu:runFrame()`.
+- `mgba.exe` needs its Qt DLLs beside it. Windows resolves static imports before
+  `WinMain` runs, so the distribution keeps them in `qt/` and starts the real
+  binary through a small launcher rather than pretending they can be hidden.
+- `findBytes` and `hashRange` only take the direct-memory path when the whole
+  requested range sits inside one mapped block; a range that straddles blocks
+  still falls back to per-byte `busRead8`.
+- Only Windows is verified. No other platform or console has been built here.
 
 ### Tests
 
-`tools/mgba-headless/tests.lua` covers the new methods: 46 checks, 0 failures.
+`tools/mgba-headless/tests.lua` covers the new methods: 48 checks, 0 failures.
 Run it with:
 
 ```cmd
 mgba-headless.exe -L tests.lua "path\to\game.gba"
 ```
+
+All three frontends pass it: `mgba-headless.exe`, `mgba-sdl.exe` and `mgba.exe`.
+Set `MGBA_TEST_SCREENSHOT=1` to include the two screenshot checks.
+
+### Debugger
+
+`-g` starts the GDB stub on `127.0.0.1:2345`; it takes no port argument, so
+`-g 2345` shifts the ROM path and the emulator never opens the port.
+
+### Window size
+
+Both windowed frontends default to `DEFAULT_VIDEO_SCALE` (3), giving 720x480.
+Override with `-1` to `-8`, or `--scale=N`.

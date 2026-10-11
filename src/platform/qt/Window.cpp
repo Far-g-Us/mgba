@@ -263,6 +263,12 @@ void Window::argumentsPassed() {
 	QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
 #endif
 	m_initialSize = size * m_savedScale;
+	// argumentsPassed runs after the window is on screen, so showEvent has
+	// already had its chance to apply m_initialSize and the window stays at its
+	// minimum. Apply it here too when that has happened.
+	if (isVisible()) {
+		resizeFrame(m_initialSize);
+	}
 
 	if (args->fname) {
 		setController(m_manager->loadGame(args->fname));

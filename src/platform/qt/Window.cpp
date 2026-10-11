@@ -112,13 +112,13 @@ Window::Window(CoreManager* manager, ConfigController* config, int playerId, QWi
 	m_logo.setDevicePixelRatio(m_screenWidget->devicePixelRatio());
 	m_logo = m_logo; // Free memory left over in old pixmap
 
-#if defined(M_CORE_GBA)
-	float i = 2;
-#elif defined(M_CORE_GB)
-	float i = 3;
-#endif
+// This is the default scale, applied here rather than in argumentsUsed,
+	// which now only overrides what an explicit -N asks for. Leaving the
+	// literal 2/3 in place would shrink the window on every launch that has no
+	// saved scaleMultiplier.
+	float i = DEFAULT_VIDEO_SCALE;
 	QVariant multiplier = m_config->getOption("scaleMultiplier");
-	if (!multiplier.isNull()) {
+	if (!multiplier.isNull() && multiplier.toInt() > 0) {
 		m_savedScale = multiplier.toInt();
 		i = m_savedScale;
 	}
@@ -251,29 +251,39 @@ void Window::argumentsPassed() {
 	}
 #endif
 
-	int scale = m_config->graphicsOpts()->multiplier;
-	if (scale <= 0) {
-		scale = DEFAULT_VIDEO_SCALE;
-	}
+// graphicsOpts()->multiplier is filled from the command line and nowhere else;
+// the value the user picked in the menu lives in the separate scaleMultiplier
+// option and is read by the constructor. Overwriting m_savedScale here
+// unconditionally therefore threw the setting away on every launch, and the
+// m_initialSize assignment below discarded whatever loadConfig had adopted from
+// opts->width/height, so a window the user had deliberately resized always came
+// back at the default scale.
+//
+// Only an explicit -N or --scale=N may override. Everything else is already
+// decided by the time this runs: the constructor sets m_initialSize from
+// scaleMultiplier or the native size, loadConfig replaces it with a saved size
+// larger than the native one, and showEvent has already applied the result.
+int scale = m_config->graphicsOpts()->multiplier;
+if (scale > 0) {
 	m_savedScale = scale;
 
 #if defined(M_CORE_GBA)
-	QSize size(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS);
+	m_initialSize = QSize(GBA_VIDEO_HORIZONTAL_PIXELS, GBA_VIDEO_VERTICAL_PIXELS) * scale;
 #elif defined(M_CORE_GB)
-	QSize size(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS);
+	m_initialSize = QSize(GB_VIDEO_HORIZONTAL_PIXELS, GB_VIDEO_VERTICAL_PIXELS) * scale;
 #endif
-	m_initialSize = size * m_savedScale;
-	// argumentsPassed runs after the window is shown, so showEvent has already
-	// had its chance to apply m_initialSize and the window stays at its minimum.
-	//
-	// This deliberately ignores a size restored from the config: honouring it
-	// here was tried and made a first run collapse to a 160x28 strip, because
-	// resizeFrame derives the outer size from the difference between the window
-	// and the central widget, and that difference is not settled at this point.
-	// The saved size is still respected on the next run, via loadConfig.
-	if (isVisible()) {
+}
+
+// resizeFrame turns a content size into a window size using
+// this->size() - centralWidget()->size(), and neither showEvent nor this is late
+// enough for that difference to have settled: at both points the window is still
+// at its minimum, and applying the size there collapses a first run to a 160x28
+// strip. Wait for the layout to pass before reading the geometry.
+if (m_initialSize.isValid()) {
+	QTimer::singleShot(250, this, [this]() {
 		resizeFrame(m_initialSize);
-	}
+	});
+}
 
 	if (args->fname) {
 		setController(m_manager->loadGame(args->fname));

@@ -27,7 +27,19 @@ CXX_GUARD_START
 #endif
 
 #ifndef DISABLE_THREADING
-#if 0
+// C11 _Thread_local, used when the compiler has it and has not opted out of
+// <threads.h>.
+//
+// The !defined(_WIN32) guard is load-bearing and must stay. Windows declares
+// ThreadLocal as a DWORD alias in platform/windows/threading.h, and on MinGW
+// built with -std=c11 the condition below would otherwise hold and redefine
+// the name as a macro on top of that typedef.
+//
+// Replacing this with `#if 0` to achieve that effect also silently deleted the
+// branch for every other platform: on Linux and macOS with -std=c11 neither
+// the macros here nor the pthread_key_t typedef in platform/posix were
+// defined, so `static ThreadLocal _contextKey;` failed to compile at all.
+#if !defined(_WIN32) && (__STDC_VERSION__ >= 201112L) && (__STDC_NO_THREADS__ != 1)
 #define ThreadLocal _Thread_local void*
 #define ThreadLocalInitKey(X)
 #define ThreadLocalSetKey(K, V) K = V

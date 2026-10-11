@@ -1,9 +1,41 @@
+# Build trees. Upstream only had /build and /build-*; this fork also uses
+# bclean* for the MSYS2 static frontends and bqt* for the Qt one.
 build*/
 bclean*/
 bqt*/
-bqt3/
+/build
+/build-*
+
+# CMake leftovers that would otherwise be committable.
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+CMakeUserPresets.json
+compile_commands.json
+cmake_install.cmake
+version.c
+hle-bios.bin
+.cache/
+.vscode/
+.vs/
+
+# Build products.
 *.o
 *.obj
 *.a
 *.exe
 *.dll
+*.so
+*.lib
+*.dylib
+
+# Editor and scratch files.
+*~
+*.swp
+*.user*
+*.pyc
+
+# Game state. This fork drives savestate and battery tooling, so a stray
+# `git add -A` after a test run would otherwise commit them.
+*.sav
+*.ss0

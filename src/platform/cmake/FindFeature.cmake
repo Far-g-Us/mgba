@@ -51,18 +51,33 @@ function(find_feature FEATURE_NAME FEATURE_REQUIRES)
 		set(FOUND OFF)
 		foreach(REQUIRE ${NAMELIST})
 			if(NOT ${REQUIRE}_FOUND)
-				# Honour libraries the caller supplied. pkg_search_module hands back
-				# a bare -lfoo, which GNU ld resolves to the import library
-				# libfoo.dll.a before libfoo.a, so asking for a static build through
-				# CMAKE_FIND_LIBRARY_SUFFIXES is not enough: the search has to be
-				# skipped outright when the answer is already known.
-				if(${REQUIRE}_LIBRARIES OR ${REQUIRE}_STATIC_LIBRARIES)
-					set(${REQUIRE}_FOUND TRUE)
-				else()
-					find_package(${REQUIRE} ${FIND_VERSION} QUIET)
-					if(NOT ${REQUIRE}_FOUND)
-						pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
-					endif()
+# Honour libraries the caller supplied. pkg_search_module hands back
+			# a bare -lfoo, which GNU ld resolves to the import library
+			# libfoo.dll.a before libfoo.a, so asking for a static build through
+			# CMAKE_FIND_LIBRARY_SUFFIXES is not enough: the library answer has
+			# to survive the search.
+			#
+			# The search must still run, though. find_package/pkg_search_module is
+			# what populates INCLUDE_DIR(S) and VERSION_*, so skipping it outright
+			# left LUA_INCLUDE_DIR empty and LUA_VERSION_ONLY empty in the Qt
+			# build. That build only linked because epoxy happened to share the
+			# same prefix and supplied the -I; with a Lua installed anywhere else
+			# it would have failed on lua.h.
+			if(${REQUIRE}_LIBRARIES OR ${REQUIRE}_STATIC_LIBRARIES)
+				set(FEATURE_CALLER_LIBRARIES ${${REQUIRE}_LIBRARIES})
+				set(FEATURE_CALLER_STATIC_LIBRARIES ${${REQUIRE}_STATIC_LIBRARIES})
+				find_package(${REQUIRE} ${FIND_VERSION} QUIET)
+				if(NOT ${REQUIRE}_FOUND)
+					pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
+				endif()
+				set(${REQUIRE}_LIBRARIES ${FEATURE_CALLER_LIBRARIES})
+				set(${REQUIRE}_STATIC_LIBRARIES ${FEATURE_CALLER_STATIC_LIBRARIES})
+				set(${REQUIRE}_FOUND TRUE)
+			else()
+				find_package(${REQUIRE} ${FIND_VERSION} QUIET)
+				if(NOT ${REQUIRE}_FOUND)
+					pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
+				endif()
 				endif()
 			endif()
 			if(${REQUIRE}_FOUND)

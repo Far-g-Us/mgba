@@ -1205,9 +1205,14 @@ bool _luaInvoke(struct mScriptEngineContextLua* luaContext, struct mScriptFrame*
 	lua_pushlightuserdata(luaContext->lua, luaContext);
 	lua_rawset(luaContext->lua, LUA_REGISTRYINDEX);
 	int ret = lua_pcall(luaContext->lua, nargs, LUA_MULTRET, 0);
-	lua_pushliteral(luaContext->lua, "mCtx");
-	lua_pushnil(luaContext->lua);
-	lua_rawset(luaContext->lua, LUA_REGISTRYINDEX);
+	// Do not clear mCtx here. The registry belongs to this lua_State, so a
+	// permanent entry still rejects a call made on the wrong state, which is
+	// what the guard is for. Clearing it made every Lua function reachable
+	// outside _luaInvoke fail, because those paths never set it: types.c
+	// invokes member accessors through mScriptInvoke directly, and the
+	// collector runs finalisers with no mCtx in scope. A watchpoint over
+	// 0x06000000-0x060000FF delivers 545 hits and then died on the next frame
+	// with "Function called from invalid context".
 
 	if (ret == LUA_ERRRUN) {
 		luaContext->lastError = strdup(lua_tostring(luaContext->lua, -1));

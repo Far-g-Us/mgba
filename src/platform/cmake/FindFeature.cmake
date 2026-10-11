@@ -51,9 +51,18 @@ function(find_feature FEATURE_NAME FEATURE_REQUIRES)
 		set(FOUND OFF)
 		foreach(REQUIRE ${NAMELIST})
 			if(NOT ${REQUIRE}_FOUND)
-				find_package(${REQUIRE} ${FIND_VERSION} QUIET)
-				if(NOT ${REQUIRE}_FOUND)
-					pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
+				# Honour libraries the caller supplied. pkg_search_module hands back
+				# a bare -lfoo, which GNU ld resolves to the import library
+				# libfoo.dll.a before libfoo.a, so asking for a static build through
+				# CMAKE_FIND_LIBRARY_SUFFIXES is not enough: the search has to be
+				# skipped outright when the answer is already known.
+				if(${REQUIRE}_LIBRARIES OR ${REQUIRE}_STATIC_LIBRARIES)
+					set(${REQUIRE}_FOUND TRUE)
+				else()
+					find_package(${REQUIRE} ${FIND_VERSION} QUIET)
+					if(NOT ${REQUIRE}_FOUND)
+						pkg_search_module(${REQUIRE} "${REQUIRE}${PKG_CONFIG_VERSION_CHECK}")
+					endif()
 				endif()
 			endif()
 			if(${REQUIRE}_FOUND)

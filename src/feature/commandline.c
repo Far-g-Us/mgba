@@ -153,7 +153,18 @@ bool mArgumentsParse(struct mArguments* args, int argc, char* const* argv, struc
 			break;
 #ifdef ENABLE_SCRIPTING
 		case 'L':
-			if (args->nScripts < MGBA_MAX_SCRIPTS) { args->scripts[args->nScripts++] = strdup(optarg); }
+			if (args->nScripts >= MGBA_MAX_SCRIPTS) {
+				// Say so, on stderr directly. Silently dropping the 17th -L looks
+				// exactly like a green run with reduced coverage: the process
+				// exits 0 and the report says every check passed while one script
+				// never ran. This uses fprintf rather than mLOG because it is a
+				// usage error the user must see whatever the log level or category
+				// filtering is, and mLOG(STATUS, ...) can be silenced entirely.
+				fprintf(stderr, "Too many -L scripts (limit %d), ignoring \"%s\"\n",
+					MGBA_MAX_SCRIPTS, optarg);
+				break;
+			}
+			args->scripts[args->nScripts++] = strdup(optarg);
 			break;
 #endif
 #ifdef USE_EDITLINE
@@ -318,6 +329,17 @@ void mArgumentsDeinit(struct mArguments* args) {
 	args->bios = 0;
 
 	HashTableDeinit(&args->configOverrides);
+
+	// Every scripts[i] comes from the strdup in the -L handler above and
+	// nowhere else, so the free is one per non-empty slot. Zeroing them keeps
+	// a second call from double-freeing, and clearing nScripts means the loop
+	// becomes a no-op instead of walking stale pointers.
+	int i;
+	for (i = 0; i < args->nScripts; ++i) {
+		free(args->scripts[i]);
+		args->scripts[i] = 0;
+	}
+	args->nScripts = 0;
 
 }
 

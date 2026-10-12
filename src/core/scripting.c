@@ -1118,12 +1118,8 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 // is fine; calling _runCallbacks there is what breaks the context, and the same
 // run survives 20 frames once the call is deferred.
 	static void _dispatchDebuggerEvent(struct mScriptDebugger* scriptDebugger, struct mScriptBreakpoint* point, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
-	// Deliberately unreferenced and never freed here. Lua receives the table as a
-	// userdata that aliases this struct, and freeing underneath it corrupts the
-	// heap: measured as STATUS_HEAP_CORRUPTION on the 19-test scripting suite
-	// when this was allocated with refs = 1 and dereferenced afterwards. The
-	// cost is one leaked struct Table per delivered event, which a frame-capped
-	// tracer keeps bounded.
+	// Unreferenced, so the Lua wrapper copies the struct instead of taking a
+	// reference, and the table is released here once the callbacks have run.
 	struct mScriptValue cbInfo = {
 		.refs = mSCRIPT_VALUE_UNREF,
 		.flags = 0,
@@ -1166,6 +1162,12 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	}
 
 	_runCallbacks(scriptDebugger, point, &cbInfo);
+	// The table is unreferenced, so mScriptValueRef and mScriptValueDeref both
+	// return without doing anything and the allocation has to be released here.
+	// That is safe only now that each invocation drains back to its own mark:
+	// before, a nested invocation released the caller's borrow as well and this
+	// free landed on a table the pool was still accounting for.
+	cbInfo.type->free(&cbInfo);
 }
 
 	// A watchpoint over a whole region of VRAM produces thousands of hits in a

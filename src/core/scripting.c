@@ -1210,9 +1210,9 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	struct mScriptValue valPc;
 
 	mScriptTableInsert(&cbInfo, &keyAddress, &valAddress);
-	// Present only when the platform could give a program counter. A watchpoint
-	// on a DMA or other non-CPU access has none, and reporting 0 there would be
-	// indistinguishable from a real fetch at address 0.
+	// Present only when the access came from the CPU. A DMA transfer has no
+	// instruction behind it, and reporting 0 there would be indistinguishable
+	// from a real fetch at address 0.
 	if (hasPc) {
 		valPc = mSCRIPT_MAKE_U32(pc);
 		mScriptTableInsert(&cbInfo, &keyPc, &valPc);
@@ -1314,19 +1314,13 @@ static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
 		event->info = *info;
 		// target is only meaningful inside the hook and nothing at delivery
 		// reads it, so do not carry a pointer a frame forward.
-		event->info.target = NULL;
-		event->hasPc = false;
-		event->pc = 0;
-		// Capture the program counter here, while the access that triggered this is
-		// still the most recent thing the CPU did. Reading it from the callback
-		// instead returns wherever the CPU is at flush time.
-		if (debugger->p && debugger->p->core) {
-			uint32_t out = 0;
-			if (debugger->p->core->readRegister(debugger->p->core, "pc", &out)) {
-				event->hasPc = true;
-				event->pc = out;
-			}
-		}
+event->info.target = NULL;
+		// Taken from the entry info the platform debugger filled in, which knows
+		// the right convention for the current instruction. Reading the PC
+		// register from here instead would report the following instruction on
+		// ARM, where the register carries a pipeline offset.
+		event->hasPc = info->pc >= 0;
+		event->pc = event->hasPc ? (uint32_t) info->pc : 0;
 	}
 
 	debugger->isPaused = false;

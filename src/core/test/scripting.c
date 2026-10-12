@@ -1111,8 +1111,7 @@ M_TEST_DEFINE(watchpointProgramCounter) {
 	lua->setGlobal(lua, "base", &base);
 	TEST_PROGRAM("assert(0 < emu:setRangeWatchpoint(bkpt, base, base + 0xFF, C.WATCHPOINT_TYPE.READ))");
 
-	// Walk a run of distinct addresses, so a recorded program counter has
-	// somewhere to differ. A single read would pass even with a stale PC.
+	// Walk a run of distinct addresses.
 	int i;
 	for (i = 0; i < 8; ++i) {
 		core->busRead8(core, RAM_BASE + i);
@@ -1120,9 +1119,11 @@ M_TEST_DEFINE(watchpointProgramCounter) {
 	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	TEST_PROGRAM("assert(hit == 8)");
 	TEST_PROGRAM("assert(addr == base + 7)");
-	// Present, and inside the emulated address space rather than inside mGBA.
-	TEST_PROGRAM("assert(pc ~= nil)");
-	TEST_PROGRAM("assert(pc >= 0x00000000 and pc <= 0x00FFFFFF)");
+	// These reads are issued from C, not by the CPU, so no instruction is
+	// responsible and the field must be absent rather than zero. Reporting a
+	// counter here would name wherever the CPU happens to be parked, which is
+	// the confusion this field exists to remove.
+	TEST_PROGRAM("assert(pc == nil)");
 
 	mScriptContextDeinit(&context);
 	TEARDOWN_CORE;

@@ -6,6 +6,7 @@
 #include <mgba/internal/arm/debugger/memory-debugger.h>
 
 #include <mgba/internal/arm/debugger/debugger.h>
+#include <mgba/internal/arm/isa-inlines.h>
 #include <mgba/internal/debugger/parser.h>
 
 #include <mgba-util/math.h>
@@ -125,6 +126,13 @@ static void _checkWatchpoints(struct ARMDebugger* debugger, uint32_t address, en
 			info.type.wp.watchType = watchpoint->type;
 			info.type.wp.accessType = type;
 			info.type.wp.accessSource = debugger->cpu->memory.accessSource;
+			// Only a program access has an instruction behind it. _ARMPCAddress is the
+			// same helper the rest of the ARM debugger uses, which undoes the pipeline
+			// offset the PC register carries; taking the register raw would name the
+			// following instruction instead of the one that did the access.
+			info.pc = (debugger->cpu->memory.accessSource == mACCESS_PROGRAM)
+			          ? (int32_t) _ARMPCAddress(debugger->cpu)
+			          : -1;
 			info.address = address;
 			info.segment = 0;
 			info.width = width;

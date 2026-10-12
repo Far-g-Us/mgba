@@ -124,6 +124,12 @@ struct mDebuggerEntryInfo {
 		} st;
 	} type;
 	ssize_t pointId;
+	// Address of the instruction that caused the entry, or -1 when the access
+	// did not come from the CPU, such as a DMA transfer. Each platform computes
+	// this its own way: on ARM the raw PC register holds the next instruction plus
+	// a pipeline offset, so reading it directly would report an address a couple
+	// of bytes past the instruction actually responsible.
+	int32_t pc;
 	struct mDebuggerModule* target;
 };
 

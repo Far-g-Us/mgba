@@ -1,8 +1,13 @@
 # Build trees. Upstream only had /build and /build-*; this fork also uses
-# bclean* for the MSYS2 static frontends and bqt* for the Qt one.
+# bclean* for the MSYS2 static frontends, bqt* for the Qt one, and btest* for
+# the cmocka build. btest* matters most: that tree builds GBA and GB test ROMs,
+# so leaving it unignored means one `git add -A` indexes generated .gba files.
+# Note that *.gba is deliberately absent, because upstream tracks real test ROMs
+# under cinema/ and those must stay tracked.
 build*/
 bclean*/
 bqt*/
+btest*/
 /build
 /build-*
 

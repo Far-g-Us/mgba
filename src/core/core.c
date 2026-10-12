@@ -461,6 +461,10 @@ void* mCoreGetMemoryBlock(struct mCore* core, uint32_t start, size_t* size) {
 void* mCoreGetMemoryBlockMasked(struct mCore* core, uint32_t start, size_t* size, uint32_t mask) {
 	const struct mCoreMemoryBlock* block = mCoreGetMemoryBlockInfo(core, start);
 	if (!block || !(block->flags & mask)) {
+		// Every other way out of this function leaves size at zero, so a caller
+		// that hands in an uninitialised value and reads it after a NULL return
+		// sees the same answer whichever way it failed.
+		*size = 0;
 		return NULL;
 	}
 	uint8_t* out = core->getMemoryBlock(core, block->id, size);

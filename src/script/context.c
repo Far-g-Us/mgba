@@ -169,6 +169,15 @@ void mScriptContextDrainPool(struct mScriptContext* context) {
 void mScriptContextDrainPoolAbove(struct mScriptContext* context, size_t mark) {
 	size_t i;
 	size_t size = mScriptListSize(&context->refPool);
+	// Resize takes a change in size, so a mark above the current size would grow
+	// the pool and leave entries that were never initialised in it, for the next
+	// drain to dereference as mScriptValue pointers. Callers take the mark from
+	// the pool itself so this cannot happen today, but this pool has already cost
+	// two heap corruptions and the failure it guards against is silent.
+	if (mark > size) {
+		mScriptListClear(&context->refPool);
+		return;
+	}
 	for (i = mark; i < size; ++i) {
 		struct mScriptValue* value = mScriptListGetPointer(&context->refPool, i);
 		if (value->type->base == mSCRIPT_TYPE_WRAPPER) {

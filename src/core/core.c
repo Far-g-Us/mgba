@@ -472,8 +472,19 @@ void* mCoreGetMemoryBlockMasked(struct mCore* core, uint32_t start, size_t* size
 		*size = 0;
 		return NULL;
 	}
-	out += start - block->start;
-	*size -= start - block->start;
+	// The offset into the block can reach or pass the size the core reports. A
+	// GB core that declares a larger block than it hands out produces a negative
+	// remainder, and *size then wraps to a huge value, which every caller reads as
+	// "this block covers the whole request". Clamping turns that into a miss
+	// instead, so the callers fall back to their per-byte path rather than walking
+	// off the end of the buffer the core returned.
+	size_t offset = start - block->start;
+	if (offset >= *size) {
+		*size = 0;
+		return NULL;
+	}
+	out += offset;
+	*size -= offset;
 	return out;
 }
 

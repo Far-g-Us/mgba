@@ -293,11 +293,22 @@ M_TEST_DEFINE(memoryWriteRange) {
 
 	LOAD_PROGRAM(
 		"n = emu:writeRange(base + 4096, data)\n"
+		"r = emu:readRange(base + 4096, 64)\n"
+		"rlen = #r\n"
+		"requal = (r == data)\n"
 		// EWRAM ends at 0x0203FFFF, so this runs off the end of one mapped block
 		// and into unmapped space, which is the branch that cannot take the
 		// block pointer and has to go through the bus a byte at a time.
+#ifdef M_CORE_GBA
 		"m = emu:writeRange(0x0203FFF0, data)\n"
+#endif
 		"z = emu:writeRange(base, '')\n"
+		// ROM is mapped and readable but not writable. A fast path that only
+		// asked for MAPPED would memcpy into the loaded image here and change
+		// what checksum and dumpRange report for the rest of the run.
+		"b = emu:checksum(0)\n"
+		"q = emu:writeRange(0x08000000, data)\n"
+		"same = emu:checksum(0) == b\n"
 	);
 
 	// 64 distinct bytes, so a chunked write that dropped or repeated one would
@@ -314,14 +325,33 @@ M_TEST_DEFINE(memoryWriteRange) {
 	assert_true(lua->run(lua));
 
 	TEST_VALUE(S32, "n", 64);
-	TEST_VALUE(S32, "m", 64);
 	TEST_VALUE(S32, "z", 0);
+	TEST_VALUE(S32, "q", 64);
+	// The read side must still agree with the write side after both were touched.
+	// readRange returns a string, so the length and the bytes are compared in Lua.
+	TEST_VALUE(S32, "rlen", 64);
+	TEST_VALUE(BOOL, "requal", true);
+#ifdef M_CORE_GBA
+	TEST_VALUE(S32, "m", 64);
+#endif
 
 	// data is char, so a byte above 0x7F reads back negative against an unsigned
 	// bus value. Comparing through unsigned char keeps all 64 bytes covered.
 	for (i = 0; i < 64; ++i) {
 		assert_int_equal(core->busRead8(core, RAM_BASE + 4096 + i), (unsigned char) data[i]);
 	}
+#ifdef M_CORE_GBA
+	// 16 bytes of that range are inside EWRAM and must have landed despite the
+	// fallback. Checking only the return value would pass even if the byte loop
+	// wrote nothing at all.
+	for (i = 0; i < 16; ++i) {
+		assert_int_equal(core->busRead8(core, 0x0203FFF0 + i), (unsigned char) data[i]);
+	}
+#endif
+
+	// The ROM write must have left the image alone, so the checksum taken after it
+	// has to equal the one taken before.
+	TEST_VALUE(BOOL, "same", true);
 
 	mScriptContextDeinit(&context);
 	TEARDOWN_CORE;

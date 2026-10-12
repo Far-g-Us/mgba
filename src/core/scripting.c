@@ -483,12 +483,22 @@ static void _readChunk(struct mCore* core, uint32_t address, uint32_t chunk, uin
 	}
 }
 
+// How many bytes writeRange moves through the bus per iteration. Matches the
+// buffer the read side uses in _readChunk.
+#define WRITERANGE_CHUNK 256
+
 // Mirror of _readChunk. A chunk that lands entirely inside one mapped block is
 // copied straight into that block, so writing a range that crosses a boundary
 // does not cost a busWrite8 per byte either.
+//
+// The mask asks for WRITE as well as MAPPED. The read path cannot: ROM and BIOS
+// are mapped and readable, but a memcpy through a read-only pointer would write
+// into the loaded image itself and change what checksum, dumpRange and savestates
+// see for the rest of the run. Requiring WRITE makes those addresses fall
+// through to busWrite8, which the bus discards exactly as it discards write8.
 static void _writeChunk(struct mCore* core, uint32_t address, uint32_t chunk, const uint8_t* buffer) {
 	size_t avail = 0;
-	uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
+	uint8_t* direct = mCoreGetMemoryBlockMasked(core, address, &avail, mCORE_MEMORY_MAPPED | mCORE_MEMORY_WRITE);
 	if (direct && chunk <= avail) {
 		memcpy(direct, buffer, chunk);
 		return;
@@ -499,10 +509,15 @@ static void _writeChunk(struct mCore* core, uint32_t address, uint32_t chunk, co
 	}
 }
 
-// Write the bytes of a string to the bus starting at `address` and report how
-// many were written, so a script can tell a short write from a full one. The
-// length comes from the string itself rather than a separate argument, which is
-// what keeps a mismatch between the two impossible.
+// Write the bytes of a string to the bus starting at `address` and return the
+// byte count. The length comes from the string itself rather than a separate
+// argument, which is what keeps a disagreement between the two impossible.
+//
+// The return is the number of bytes handed to the bus, not the number that
+// changed something. A write to unmapped or read-only space is still reported,
+// because the bus discards those writes silently and write8 does the same, so
+// counting them here would make writeRange the only memory method that can tell
+// a script its write was dropped.
 static int32_t _mScriptCoreWriteRange(struct mCore* core, uint32_t address, struct mScriptString* data) {
 	const uint8_t* source;
 	uint32_t length;
@@ -514,8 +529,8 @@ static int32_t _mScriptCoreWriteRange(struct mCore* core, uint32_t address, stru
 	length = data->size;
 	while (done < length) {
 		uint32_t chunk = length - done;
-		if (chunk > 256) {
-			chunk = 256;
+		if (chunk > WRITERANGE_CHUNK) {
+			chunk = WRITERANGE_CHUNK;
 		}
 		_writeChunk(core, address + done, chunk, source + done);
 		done += chunk;
@@ -900,7 +915,7 @@ mSCRIPT_DEFINE_STRUCT(mCore)
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write16, busWrite16)
 mSCRIPT_DEFINE_DOCSTRING("Write a 32-bit value from the given bus address")
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write32, busWrite32)
-	mSCRIPT_DEFINE_DOCSTRING("Write the bytes of a string to the bus starting at the given address, returns the byte count written")
+	mSCRIPT_DEFINE_DOCSTRING("Write the bytes of a string to the bus starting at the given address, returns the number of bytes handed to the bus")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, writeRange)
 
 	mSCRIPT_DEFINE_DOCSTRING("Read the value of the register with the given name")
@@ -1210,6 +1225,12 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	// That is safe only now that each invocation drains back to its own mark:
 	// before, a nested invocation released the caller's borrow as well and this
 	// free landed on a table the pool was still accounting for.
+	//
+	// Lifetime contract, unchanged from upstream: the table is valid for the
+	// duration of the callbacks and not after. A callback that stores info in a
+	// global and reads it on a later frame reads freed memory, because the table
+	// is freed here and because its entries point at this function's stack. That
+	// is a property of how the table is built, not of how it is released.
 	cbInfo.type->free(&cbInfo);
 }
 

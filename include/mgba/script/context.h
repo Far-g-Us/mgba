@@ -77,6 +77,7 @@ void mScriptContextDeinit(struct mScriptContext*);
 
 void mScriptContextFillPool(struct mScriptContext*, struct mScriptValue*);
 void mScriptContextDrainPool(struct mScriptContext*);
+void mScriptContextDrainPoolAbove(struct mScriptContext*, size_t mark);
 
 struct mScriptEngineContext* mScriptContextRegisterEngine(struct mScriptContext*, struct mScriptEngine2*);
 void mScriptContextRegisterEngines(struct mScriptContext*);

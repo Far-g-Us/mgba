@@ -156,6 +156,32 @@ void mScriptContextDrainPool(struct mScriptContext* context) {
 	mScriptListClear(&context->refPool);
 }
 
+// Release only what this invocation borrowed.
+//
+// The pool belongs to the context, not to an invocation, and invocations nest:
+// _luaThunk converts a callback's arguments from Lua and hands them to the
+// real function, which wraps them again. An invocation that drained the whole
+// pool would also release the entries its caller put there, and those
+// references belong to the caller's own userdata, so the table shared with a
+// debugger callback was freed while Lua still held it. Measured on Radical Red
+// as STATUS_HEAP_CORRUPTION once the callback's info table was allocated
+// referenced and released by __gc.
+void mScriptContextDrainPoolAbove(struct mScriptContext* context, size_t mark) {
+	size_t i;
+	size_t size = mScriptListSize(&context->refPool);
+	for (i = mark; i < size; ++i) {
+		struct mScriptValue* value = mScriptListGetPointer(&context->refPool, i);
+		if (value->type->base == mSCRIPT_TYPE_WRAPPER) {
+			value = mScriptValueUnwrap(value);
+			mScriptValueDeref(value);
+		} else if (value->type == mSCRIPT_TYPE_MS_WEAKREF) {
+			mScriptContextClearWeakref(context, value->value.u32);
+		}
+	}
+	// Resize takes a change in size, not a target size.
+	mScriptListResize(&context->refPool, (ssize_t) mark - (ssize_t) size);
+}
+
 struct mScriptEngineContext* mScriptContextRegisterEngine(struct mScriptContext* context, struct mScriptEngine2* engine) {
 	struct mScriptEngineContext* ectx = engine->create(engine, context);
 	if (ectx) {

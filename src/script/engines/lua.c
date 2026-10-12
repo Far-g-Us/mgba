@@ -1193,8 +1193,15 @@ bool _luaInvoke(struct mScriptEngineContextLua* luaContext, struct mScriptFrame*
 		return false;
 	}
 
+	// Everything this invocation borrows goes above this mark and is released
+	// by mScriptContextDrainPoolAbove. The pool is shared with any enclosing
+	// invocation, and draining it whole would hand back references that belong
+	// to the caller's own userdata.
+	size_t poolMark = mScriptListSize(&luaContext->d.context->refPool);
+
 	if (frame) {
 		if (!_luaPushFrame(luaContext, luaContext->lua, &frame->stack)) {
+			mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 			mScriptContextDeactivate(luaContext->d.context);
 			return false;
 		}
@@ -1222,14 +1229,17 @@ bool _luaInvoke(struct mScriptEngineContextLua* luaContext, struct mScriptFrame*
 	}
 	mScriptContextDeactivate(luaContext->d.context);
 	if (ret) {
+		// Also on the error path: the frame we pushed borrowed references, and
+		// leaving them behind hands them to whichever invoke encloses this one.
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		return false;
 	}
 
 	if (frame && !_luaPopFrame(luaContext, luaContext->lua, &frame->stack)) {
-		mScriptContextDrainPool(luaContext->d.context);
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		return false;
 	}
-	mScriptContextDrainPool(luaContext->d.context);
+	mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 
 	return true;
 }
@@ -1264,10 +1274,13 @@ static struct mScriptEngineContextLua* _luaGetContext(lua_State* lua) {
 int _luaThunk(lua_State* lua) {
 	struct mScriptEngineContextLua* luaContext = _luaGetContext(lua);
 	struct mScriptFrame frame;
+	// This thunk runs inside the _luaInvoke that called the callback, so the pool
+	// already holds that invoke's entries. Release only what this thunk adds.
+	size_t poolMark = mScriptListSize(&luaContext->d.context->refPool);
 	mScriptFrameInit(&frame);
 	if (!_luaPopFrame(luaContext, lua, &frame.stack)) {
 		_freeFrame(&frame.stack);
-		mScriptContextDrainPool(luaContext->d.context);
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		mScriptFrameDeinit(&frame);
 		luaL_traceback(lua, lua, "Error calling function (translating arguments into runtime)", 1);
 		return lua_error(lua);
@@ -1276,14 +1289,14 @@ int _luaThunk(lua_State* lua) {
 	struct mScriptValue* fn = lua_touserdata(lua, lua_upvalueindex(1));
 	_autofreeFrame(luaContext->d.context, &frame.stack);
 	if (!fn || !mScriptContextInvoke(luaContext->d.context, fn, &frame)) {
-		mScriptContextDrainPool(luaContext->d.context);
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		mScriptFrameDeinit(&frame);
 		luaL_traceback(lua, lua, "Error calling function (invoking failed)", 1);
 		return lua_error(lua);
 	}
 
 	bool ok = _luaPushFrame(luaContext, lua, &frame.stack);
-	mScriptContextDrainPool(luaContext->d.context);
+	mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 	mScriptFrameDeinit(&frame);
 	if (!ok) {
 		luaL_traceback(lua, lua, "Error calling function (translating return values from runtime)", 1);
@@ -1330,6 +1343,9 @@ int _luaGetObject(lua_State* lua) {
 
 int _luaSetObject(lua_State* lua) {
 	struct mScriptEngineContextLua* luaContext = _luaGetContext(lua);
+	// A metamethod invoked from Lua, so the pool belongs to whichever invoke is
+	// running. Release only what this call adds to it.
+	size_t poolMark = mScriptListSize(&luaContext->d.context->refPool);
 	char key[MAX_KEY_SIZE];
 	const char* keyPtr = lua_tostring(lua, -2);
 	struct mScriptValue* obj = lua_touserdata(lua, -3);
@@ -1351,21 +1367,21 @@ int _luaSetObject(lua_State* lua) {
 	obj = mScriptContextAccessWeakref(luaContext->d.context, obj);
 	if (!obj) {
 		mScriptValueDeref(val);
-		mScriptContextDrainPool(luaContext->d.context);
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		luaL_traceback(lua, lua, "Invalid object", 1);
 		return lua_error(lua);
 	}
 
 	if (!mScriptObjectSet(obj, key, val)) {
 		mScriptValueDeref(val);
-		mScriptContextDrainPool(luaContext->d.context);
+		mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 		char error[MAX_KEY_SIZE + 16];
 		snprintf(error, sizeof(error), "Invalid key '%s'", key);
 		luaL_traceback(lua, lua, "Invalid key", 1);
 		return lua_error(lua);
 	}
 	mScriptValueDeref(val);
-	mScriptContextDrainPool(luaContext->d.context);
+	mScriptContextDrainPoolAbove(luaContext->d.context, poolMark);
 	return 0;
 }
 

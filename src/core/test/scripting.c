@@ -1081,6 +1081,53 @@ M_TEST_DEFINE(rangeWatchpoint) {
 	TEARDOWN_CORE;
 	mDebuggerDeinit(&debugger);
 }
+
+// info.pc is captured in the debugger hook, while the access that caused the
+// event is still the last thing the CPU did. Reading it in the callback instead
+// returns the CPU position at flush time, which made every event in a flush
+// report one identical address inside the flush code.
+M_TEST_DEFINE(watchpointProgramCounter) {
+	SETUP_LUA;
+	mScriptContextAttachStdlib(&context);
+	CREATE_CORE;
+	struct mDebugger debugger;
+	core->reset(core);
+	mScriptContextAttachCore(&context, core);
+
+	mDebuggerInit(&debugger);
+	mDebuggerAttach(&debugger, core);
+
+	TEST_PROGRAM(
+		"hit = 0\n"
+		"addr = nil\n"
+		"pc = nil\n"
+		"function bkpt(info)\n"
+		"	hit = hit + 1\n"
+		"	addr = info.address\n"
+		"	pc = info.pc\n"
+		"end"
+	);
+	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
+	lua->setGlobal(lua, "base", &base);
+	TEST_PROGRAM("assert(0 < emu:setRangeWatchpoint(bkpt, base, base + 0xFF, C.WATCHPOINT_TYPE.READ))");
+
+	// Walk a run of distinct addresses, so a recorded program counter has
+	// somewhere to differ. A single read would pass even with a stale PC.
+	int i;
+	for (i = 0; i < 8; ++i) {
+		core->busRead8(core, RAM_BASE + i);
+	}
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
+	TEST_PROGRAM("assert(hit == 8)");
+	TEST_PROGRAM("assert(addr == base + 7)");
+	// Present, and inside the emulated address space rather than inside mGBA.
+	TEST_PROGRAM("assert(pc ~= nil)");
+	TEST_PROGRAM("assert(pc >= 0x00000000 and pc <= 0x00FFFFFF)");
+
+	mScriptContextDeinit(&context);
+	TEARDOWN_CORE;
+	mDebuggerDeinit(&debugger);
+}
 #endif
 
 M_TEST_SUITE_DEFINE_SETUP_TEARDOWN(mScriptCore,
@@ -1113,5 +1160,6 @@ M_TEST_SUITE_DEFINE_SETUP_TEARDOWN(mScriptCore,
 	cmocka_unit_test(overlappingBreakpoint),
 	cmocka_unit_test(overlappingWatchpoint),
 	cmocka_unit_test(rangeWatchpoint),
+	cmocka_unit_test(watchpointProgramCounter),
 #endif
 )

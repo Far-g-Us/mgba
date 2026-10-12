@@ -208,6 +208,14 @@ struct mScriptDebugger {
 	ssize_t pointId;
 	enum mDebuggerEntryReason reason;
 	struct mDebuggerEntryInfo info;
+	// The program counter at the access itself, read here in the debugger hook.
+	// Reading it from the callback does not work: a callback runs later, when the
+	// queue is flushed, so emu:readRegister("pc") there returns wherever the CPU
+	// happens to be at flush time. Every event in one flush reported the same
+	// value, and that value was inside the flush code rather than the reader.
+	// Recorded as an offset so a script can tell "no PC captured" from address 0.
+	bool hasPc;
+	uint32_t pc;
 };
 #endif
 
@@ -1175,7 +1183,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 // lands 545 hits in frame 13. Building the table and freeing it inside the hook
 // is fine; calling _runCallbacks there is what breaks the context, and the same
 // run survives 20 frames once the call is deferred.
-	static void _dispatchDebuggerEvent(struct mScriptDebugger* scriptDebugger, struct mScriptBreakpoint* point, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
+	static void _dispatchDebuggerEvent(struct mScriptDebugger* scriptDebugger, struct mScriptBreakpoint* point, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info, uint32_t pc, bool hasPc) {
 	// Unreferenced, so the Lua wrapper copies the struct instead of taking a
 	// reference, and the table is released here once the callbacks have run.
 	struct mScriptValue cbInfo = {
@@ -1191,6 +1199,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	static struct mScriptValue keyOldValue = mSCRIPT_CHARP("oldValue");
 	static struct mScriptValue keyNewValue = mSCRIPT_CHARP("newValue");
 	static struct mScriptValue keyAccessType = mSCRIPT_CHARP("accessType");
+	static struct mScriptValue keyPc = mSCRIPT_CHARP("pc");
 
 	struct mScriptValue valAddress = mSCRIPT_MAKE_U32(info->address);
 	struct mScriptValue valWidth = mSCRIPT_MAKE_S32(info->width);
@@ -1198,8 +1207,16 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	struct mScriptValue valOldValue;
 	struct mScriptValue valNewValue;
 	struct mScriptValue valAccessType;
+	struct mScriptValue valPc;
 
 	mScriptTableInsert(&cbInfo, &keyAddress, &valAddress);
+	// Present only when the platform could give a program counter. A watchpoint
+	// on a DMA or other non-CPU access has none, and reporting 0 there would be
+	// indistinguishable from a real fetch at address 0.
+	if (hasPc) {
+		valPc = mSCRIPT_MAKE_U32(pc);
+		mScriptTableInsert(&cbInfo, &keyPc, &valPc);
+	}
 	if (info->width > 0) {
 		mScriptTableInsert(&cbInfo, &keyWidth, &valWidth);
 	}
@@ -1256,14 +1273,14 @@ static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
 			struct mScriptDebuggerEvent* event = &pending[i++];
 			struct mScriptBreakpoint* point =
 				HashTableLookupBinary(&scriptDebugger->bpidMap, &event->pointId, sizeof(event->pointId));
-			if (!point) {
-				// The breakpoint was cleared after this event was recorded, so
-				// there is no callback to run. Counted, not silently dropped.
-				++scriptDebugger->pendingDropped;
-				continue;
-			}
-			_dispatchDebuggerEvent(scriptDebugger, point, event->reason, &event->info);
+		if (!point) {
+			// The breakpoint was cleared after this event was recorded, so
+			// there is no callback to run. Counted, not silently dropped.
+			++scriptDebugger->pendingDropped;
+			continue;
 		}
+		_dispatchDebuggerEvent(scriptDebugger, point, event->reason, &event->info, event->hasPc ? event->pc : 0, event->hasPc);
+	}
 		free(pending);
 	}
 
@@ -1298,6 +1315,18 @@ static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
 		// target is only meaningful inside the hook and nothing at delivery
 		// reads it, so do not carry a pointer a frame forward.
 		event->info.target = NULL;
+		event->hasPc = false;
+		event->pc = 0;
+		// Capture the program counter here, while the access that triggered this is
+		// still the most recent thing the CPU did. Reading it from the callback
+		// instead returns wherever the CPU is at flush time.
+		if (debugger->p && debugger->p->core) {
+			uint32_t out = 0;
+			if (debugger->p->core->readRegister(debugger->p->core, "pc", &out)) {
+				event->hasPc = true;
+				event->pc = out;
+			}
+		}
 	}
 
 	debugger->isPaused = false;

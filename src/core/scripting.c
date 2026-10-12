@@ -483,6 +483,46 @@ static void _readChunk(struct mCore* core, uint32_t address, uint32_t chunk, uin
 	}
 }
 
+// Mirror of _readChunk. A chunk that lands entirely inside one mapped block is
+// copied straight into that block, so writing a range that crosses a boundary
+// does not cost a busWrite8 per byte either.
+static void _writeChunk(struct mCore* core, uint32_t address, uint32_t chunk, const uint8_t* buffer) {
+	size_t avail = 0;
+	uint8_t* direct = mCoreGetMemoryBlock(core, address, &avail);
+	if (direct && chunk <= avail) {
+		memcpy(direct, buffer, chunk);
+		return;
+	}
+	uint32_t i;
+	for (i = 0; i < chunk; ++i) {
+		core->busWrite8(core, address + i, buffer[i]);
+	}
+}
+
+// Write the bytes of a string to the bus starting at `address` and report how
+// many were written, so a script can tell a short write from a full one. The
+// length comes from the string itself rather than a separate argument, which is
+// what keeps a mismatch between the two impossible.
+static int32_t _mScriptCoreWriteRange(struct mCore* core, uint32_t address, struct mScriptString* data) {
+	const uint8_t* source;
+	uint32_t length;
+	uint32_t done = 0;
+	if (!data || !data->size) {
+		return 0;
+	}
+	source = (const uint8_t*) data->buffer;
+	length = data->size;
+	while (done < length) {
+		uint32_t chunk = length - done;
+		if (chunk > 256) {
+			chunk = 256;
+		}
+		_writeChunk(core, address + done, chunk, source + done);
+		done += chunk;
+	}
+	return (int32_t) length;
+}
+
 static int32_t _mScriptCoreHashRange(struct mCore* core, uint32_t address, uint32_t length) {
 	uint8_t buffer[256];
 	// crc32() uses zlib semantics: it complements on entry and on exit, so the
@@ -761,6 +801,7 @@ mSCRIPT_DECLARE_STRUCT_METHOD(mCore, S32, dumpRange, _mScriptCoreDumpRange, 3, C
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite8, 2, U32, address, U8, value);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite16, 2, U32, address, U16, value);
 mSCRIPT_DECLARE_STRUCT_VOID_D_METHOD(mCore, busWrite32, 2, U32, address, U32, value);
+mSCRIPT_DECLARE_STRUCT_METHOD(mCore, S32, writeRange, _mScriptCoreWriteRange, 2, U32, address, STR, data);
 
 // Register functions
 mSCRIPT_DECLARE_STRUCT_METHOD(mCore, WRAPPER, readRegister, _mScriptCoreReadRegister, 1, CHARP, regName);
@@ -857,8 +898,10 @@ mSCRIPT_DEFINE_STRUCT(mCore)
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write8, busWrite8)
 	mSCRIPT_DEFINE_DOCSTRING("Write a 16-bit value from the given bus address")
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write16, busWrite16)
-	mSCRIPT_DEFINE_DOCSTRING("Write a 32-bit value from the given bus address")
+mSCRIPT_DEFINE_DOCSTRING("Write a 32-bit value from the given bus address")
 	mSCRIPT_DEFINE_STRUCT_METHOD_NAMED(mCore, write32, busWrite32)
+	mSCRIPT_DEFINE_DOCSTRING("Write the bytes of a string to the bus starting at the given address, returns the byte count written")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, writeRange)
 
 	mSCRIPT_DEFINE_DOCSTRING("Read the value of the register with the given name")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, readRegister)

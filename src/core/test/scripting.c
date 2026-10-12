@@ -282,6 +282,51 @@ M_TEST_DEFINE(memoryWrite) {
 	TEARDOWN_CORE;
 }
 
+// writeRange is the one memory method whose body takes the block-pointer fast
+// path, so a round-trip through the bus alone would pass even if that path
+// wrote to the wrong place. Reading the bytes back through busRead8 checks the
+// same thing the Lua round-trip does from the script's side.
+M_TEST_DEFINE(memoryWriteRange) {
+	SETUP_LUA;
+	CREATE_CORE;
+	core->reset(core);
+
+	LOAD_PROGRAM(
+		"n = emu:writeRange(base + 4096, data)\n"
+		// EWRAM ends at 0x0203FFFF, so this runs off the end of one mapped block
+		// and into unmapped space, which is the branch that cannot take the
+		// block pointer and has to go through the bus a byte at a time.
+		"m = emu:writeRange(0x0203FFF0, data)\n"
+		"z = emu:writeRange(base, '')\n"
+	);
+
+	// 64 distinct bytes, so a chunked write that dropped or repeated one would
+	// not read back clean.
+	char data[64];
+	int i;
+	for (i = 0; i < 64; ++i) {
+		data[i] = (char) ((i * 37 + 11) & 0xFF);
+	}
+
+	struct mScriptValue base = mSCRIPT_MAKE_S32(RAM_BASE);
+	lua->setGlobal(lua, "base", &base);
+	lua->setGlobal(lua, "data", mScriptStringCreateFromBytes(data, 64));
+	assert_true(lua->run(lua));
+
+	TEST_VALUE(S32, "n", 64);
+	TEST_VALUE(S32, "m", 64);
+	TEST_VALUE(S32, "z", 0);
+
+	// data is char, so a byte above 0x7F reads back negative against an unsigned
+	// bus value. Comparing through unsigned char keeps all 64 bytes covered.
+	for (i = 0; i < 64; ++i) {
+		assert_int_equal(core->busRead8(core, RAM_BASE + 4096 + i), (unsigned char) data[i]);
+	}
+
+	mScriptContextDeinit(&context);
+	TEARDOWN_CORE;
+}
+
 M_TEST_DEFINE(logging) {
 	SETUP_LUA;
 	struct mScriptTestLogger logger;
@@ -1015,6 +1060,7 @@ M_TEST_SUITE_DEFINE_SETUP_TEARDOWN(mScriptCore,
 	cmocka_unit_test(runFrame),
 	cmocka_unit_test(memoryRead),
 	cmocka_unit_test(memoryWrite),
+	cmocka_unit_test(memoryWriteRange),
 	cmocka_unit_test(logging),
 	cmocka_unit_test(screenshot),
 #ifdef M_CORE_GBA

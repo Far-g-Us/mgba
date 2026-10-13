@@ -1426,7 +1426,11 @@ event->info.target = NULL;
 		// the right convention for the current instruction. Reading the PC
 		// register from here instead would report the following instruction on
 		// ARM, where the register carries a pipeline offset.
-		event->hasPc = info->pc >= 0;
+		//
+		// Only a watchpoint sets the field. The breakpoint paths do not touch it,
+		// so reading it for a breakpoint would compare uninitialised stack against
+		// zero and hand a script whatever happened to be lying there.
+		event->hasPc = reason == DEBUGGER_ENTER_WATCHPOINT && info->pc >= 0;
 		event->pc = event->hasPc ? (uint32_t) info->pc : 0;
 	}
 

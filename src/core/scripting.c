@@ -236,6 +236,46 @@ struct mScriptSnapshot {
 	size_t size;
 };
 
+// Send a line to the emulator's own log under the Scripting category, so a script
+// speaking up is marked as a script and lands wherever the frontend sends its
+// log rather than in the middle of a frame. This is not print: print goes to
+// stdout raw, while this goes through the logger the frontend configured.
+//
+// The message is passed as a "%s" argument rather than as the format, so a script
+// cannot turn a message into a format string and read whatever is on the stack.
+static void _logForward(struct mLogger* logger, int category, enum mLogLevel level, const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	logger->log(logger, category, level, format, args);
+	va_end(args);
+}
+
+static bool _mScriptCoreLog(struct mScriptCoreAdapter* adapter, const char* level, const char* message) {
+	struct mLogger* logger = mLogGetContext();
+	enum mLogLevel logLevel = mLOG_INFO;
+	if (!logger || !logger->log || !message) {
+		return false;
+	}
+	if (level) {
+		if (!strcmp(level, "fatal")) {
+			logLevel = mLOG_FATAL;
+		} else if (!strcmp(level, "error")) {
+			logLevel = mLOG_ERROR;
+		} else if (!strcmp(level, "warn")) {
+			logLevel = mLOG_WARN;
+		} else if (!strcmp(level, "debug")) {
+			logLevel = mLOG_DEBUG;
+		} else if (strcmp(level, "info")) {
+			// An unknown level is refused rather than silently logged as info,
+			// because a script asking for "erorr" and getting an info line looks
+			// like the logger dropped it.
+			return false;
+		}
+	}
+	_logForward(logger, _mLOG_CAT_SCRIPT, logLevel, "%s", message);
+	return true;
+}
+
 struct mScriptCoreAdapter {
 	struct mCore* core;
 	struct mScriptContext* context;
@@ -2160,6 +2200,7 @@ mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, runFrame, _mScriptCoreAda
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearBreakpoint, _mScriptCoreAdapterClearBreakpoint, 1, S64, cbid);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, saveStateSnapshot, _mScriptCoreSaveStateSnapshot, 0);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, log, _mScriptCoreLog, 2, CHARP, level, CHARP, message);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadStateSnapshot, _mScriptCoreLoadStateSnapshot, 1, S32, id);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearStateSnapshot, _mScriptCoreClearStateSnapshot, 1, S32, id);
 
@@ -2257,6 +2298,8 @@ mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #endif
 	mSCRIPT_DEFINE_DOCSTRING("Capture the machine state and return a handle, or 0 if the core cannot save state")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, saveStateSnapshot)
+	mSCRIPT_DEFINE_DOCSTRING("Write a line to the emulator log under the Scripting category")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, log)
 	mSCRIPT_DEFINE_DOCSTRING("Put the machine back the way a snapshot found it")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadStateSnapshot)
 	mSCRIPT_DEFINE_DOCSTRING("Release a snapshot and its memory")

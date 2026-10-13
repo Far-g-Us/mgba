@@ -10,6 +10,7 @@
 #ifdef M_CORE_GBA
 #include <mgba/gba/interface.h>
 #include <mgba/internal/arm/decoder.h>
+#include <mgba/internal/debugger/symbols.h>
 #include <mgba/internal/gba/gba.h>
 #endif
 #include <mgba/script/base.h>
@@ -392,6 +393,63 @@ static void _mScriptCoreClearStateSnapshots(struct mScriptCoreAdapter* adapter) 
 		snapshot = next;
 	}
 	adapter->snapshots = NULL;
+}
+
+// Load a symbol file so getSymbolic has something to resolve against.
+//
+// The core's own loader is not used here, and that is deliberate. Handed a file
+// directly it only tries ELFOpen, and its text path is compiled out unless the
+// core was built with directory support, which ours is not: a .sym file passed
+// in would be opened, found not to be an ELF, and silently dropped. Parsing the
+// text form here is what makes a symbol file a symbol file.
+//
+// A script naming the file is also the honest form - nothing is picked up behind
+// the script's back, and two games in one directory can have different symbols.
+static bool _mScriptCoreLoadSymbols(struct mScriptCoreAdapter* adapter, const char* path) {
+	struct VFile* vf;
+	if (!path) {
+		return false;
+	}
+	vf = VFileOpen(path, O_RDONLY);
+	if (!vf) {
+		return false;
+	}
+	if (!adapter->core->symbolTable) {
+		adapter->core->symbolTable = mDebuggerSymbolTableCreate();
+		if (!adapter->core->symbolTable) {
+			vf->close(vf);
+			return false;
+		}
+	}
+	mDebuggerLoadARMIPSSymbols(adapter->core->symbolTable, vf);
+	vf->close(vf);
+	return true;
+}
+
+// Name of the symbol covering an address, or nil when nothing covers it.
+//
+// The table is empty until emu:loadSymbols has been given something to read, so
+// on a bare ROM this answers nil everywhere. That nil means "no symbol covers
+// this address"; it never means the lookup did not run, and the two are told
+// apart by the table being absent, which is checked first.
+static struct mScriptValue* _mScriptCoreGetSymbolic(struct mScriptCoreAdapter* adapter, uint32_t address) {
+	struct mCore* core = adapter->core;
+	const char* name = NULL;
+	if (!core->symbolTable) {
+		return NULL;
+	}
+	// The reverse table is keyed on the exact (value, segment) pair, so a lookup
+	// with the wrong segment silently finds nothing. The text reader stores -1,
+	// because a symbol file names no segment, while an ELF may name 0, so both
+	// are tried rather than assuming one.
+	name = mDebuggerSymbolReverseLookup(core->symbolTable, address, -1);
+	if (!name) {
+		name = mDebuggerSymbolReverseLookup(core->symbolTable, address, 0);
+	}
+	if (!name) {
+		return NULL;
+	}
+	return mScriptStringCreateFromBytes(name, strlen(name));
 }
 
 
@@ -2201,6 +2259,8 @@ mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, runFrame, _mScriptCoreAda
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearBreakpoint, _mScriptCoreAdapterClearBreakpoint, 1, S64, cbid);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, saveStateSnapshot, _mScriptCoreSaveStateSnapshot, 0);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, log, _mScriptCoreLog, 2, CHARP, level, CHARP, message);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadSymbols, _mScriptCoreLoadSymbols, 1, CHARP, path);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, WSTR, getSymbolic, _mScriptCoreGetSymbolic, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadStateSnapshot, _mScriptCoreLoadStateSnapshot, 1, S32, id);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearStateSnapshot, _mScriptCoreClearStateSnapshot, 1, S32, id);
 
@@ -2300,6 +2360,10 @@ mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, saveStateSnapshot)
 	mSCRIPT_DEFINE_DOCSTRING("Write a line to the emulator log under the Scripting category")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, log)
+	mSCRIPT_DEFINE_DOCSTRING("Read a symbol file so getSymbolic has names to resolve")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadSymbols)
+	mSCRIPT_DEFINE_DOCSTRING("Name of the symbol covering an address, or nil")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, getSymbolic)
 	mSCRIPT_DEFINE_DOCSTRING("Put the machine back the way a snapshot found it")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadStateSnapshot)
 	mSCRIPT_DEFINE_DOCSTRING("Release a snapshot and its memory")

@@ -769,11 +769,85 @@ static struct mScriptValue* _mScriptCoreTakeScreenshotToImage(struct mCore* core
 	struct mImage* image = mImageCreateFromConstBuffer(width, height, stride, mCOLOR_BGR5, pixels);
 #endif
 
-	struct mScriptValue* result = mScriptValueAlloc(mSCRIPT_TYPE_MS_S(mImage));
+struct mScriptValue* result = mScriptValueAlloc(mSCRIPT_TYPE_MS_S(mImage));
 	result->value.opaque = image;
 	result->flags = mSCRIPT_VALUE_FLAG_DEINIT;
 	return result;
 }
+
+#ifdef ENABLE_VFS
+// Read one pixel of the framebuffer in the layout the build was configured for.
+// The core hands over its own buffer rather than an mImage, so the format has to
+// be spelled out once, exactly as _mScriptCoreTakeScreenshotToImage spells it.
+static uint32_t _readPixel(const void* pixels, size_t stride, unsigned x, unsigned y) {
+	const uint8_t* row = (const uint8_t*) pixels + y * stride;
+#ifdef COLOR_16_BIT
+	return ((const uint16_t*) row)[x];
+#else
+	return ((const uint32_t*) row)[x];
+#endif
+}
+
+// Crop and zoom the framebuffer in one call. A full screenshot is useless for
+// looking at an 8x8 tile, which is what this is for: pass scale and every source
+// pixel becomes scale by scale blocks.
+//
+// Nearest neighbour on purpose. A tile magnified with interpolation loses the
+// exact pixel boundaries the eye needs to judge a glyph against, and the values
+// on screen stop corresponding to the ones in VRAM.
+static bool _mScriptCoreScreenshotRegion(struct mCore* core, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const char* path, uint32_t scale) {
+	size_t stride = 0;
+	const void* pixels = NULL;
+	unsigned width, height;
+	struct mImage* image;
+	uint32_t ox, oy;
+	if (scale < 1) {
+		scale = 1;
+	}
+	if (!w || !h) {
+		return false;
+	}
+	core->currentVideoSize(core, &width, &height);
+	core->getPixels(core, &pixels, &stride);
+	if (!pixels || !stride) {
+		return false;
+	}
+	// Clamp rather than refuse: a tracer working at the edge of the screen
+	// should get the part that exists instead of nothing at all.
+	if (x >= width) {
+		return false;
+	}
+	if (y >= height) {
+		return false;
+	}
+	if (x + w > width) {
+		w = width - x;
+	}
+	if (y + h > height) {
+		h = height - y;
+	}
+#if !defined(COLOR_16_BIT)
+	image = mImageCreate(w * scale, h * scale, mCOLOR_XBGR8);
+#elif COLOR_5_6_5
+	image = mImageCreate(w * scale, h * scale, mCOLOR_RGB565);
+#else
+	image = mImageCreate(w * scale, h * scale, mCOLOR_BGR5);
+#endif
+	if (!image) {
+		return false;
+	}
+	for (oy = 0; oy < h * scale; ++oy) {
+		uint32_t sy = y + oy / scale;
+		for (ox = 0; ox < w * scale; ++ox) {
+			uint32_t sx = x + ox / scale;
+			mImageSetPixel(image, ox, oy, _readPixel(pixels, stride, sx, sy));
+		}
+	}
+	bool ok = mImageSave(image, path, "png");
+	mImageDestroy(image);
+	return ok;
+}
+#endif
 
 #ifdef ENABLE_VFS
 // Loading functions
@@ -843,6 +917,9 @@ mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mCore, BOOL, loadStateFile, _mScript
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD_WITH_DEFAULTS(mCore, screenshot, _mScriptCoreTakeScreenshot, 1, CHARP, filename);
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mCore, W(mImage), screenshotToImage, _mScriptCoreTakeScreenshotToImage, 0);
+#ifdef ENABLE_VFS
+mSCRIPT_DECLARE_STRUCT_METHOD(mCore, BOOL, screenshotRegion, _mScriptCoreScreenshotRegion, 6, U32, x, U32, y, U32, w, U32, h, CHARP, path, U32, scale);
+#endif
 
 mSCRIPT_DEFINE_STRUCT(mCore)
 	mSCRIPT_DEFINE_CLASS_DOCSTRING(
@@ -948,8 +1025,12 @@ mSCRIPT_DEFINE_DOCSTRING("Write a 32-bit value from the given bus address")
 	mSCRIPT_DEFINE_DOCSTRING("Save a screenshot to a file")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, screenshot)
 #endif
-	mSCRIPT_DEFINE_DOCSTRING("Get a screenshot in an struct::mImage")
+mSCRIPT_DEFINE_DOCSTRING("Get a screenshot in an struct::mImage")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, screenshotToImage)
+#ifdef ENABLE_VFS
+	mSCRIPT_DEFINE_DOCSTRING("Save a zoomed crop of the screen as a PNG. Each source pixel becomes a scale by scale block")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mCore, screenshotRegion)
+#endif
 mSCRIPT_DEFINE_END;
 
 mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mCore, checksum)

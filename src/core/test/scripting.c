@@ -406,6 +406,63 @@ M_TEST_DEFINE(screenshot) {
 	TEARDOWN_CORE;
 }
 
+// A magnified tile is the point of screenshotRegion, so the test checks the
+// output dimensions rather than only that a file appeared. The PNG header holds
+// width and height, and getting them wrong would leave a 64 by 64 file holding
+// an 8 by 8 crop stretched over it, which still looks like a picture.
+M_TEST_DEFINE(screenshotRegion) {
+	SETUP_LUA;
+	mScriptContextAttachStdlib(&context);
+	// The image namespace is attached by the frontends, not by the bare context,
+	// and reading the PNG back is how the test checks the output dimensions.
+	mScriptContextAttachImage(&context);
+	CREATE_CORE;
+	mColor* buffer = malloc(240 * 160 * sizeof(mColor));
+	core->setVideoBuffer(core, buffer, 240);
+	core->reset(core);
+	core->runFrame(core);
+
+	const char* dir = getenv("TEMP");
+	if (!dir) {
+		dir = ".";
+	}
+	char tile[512];
+	char cropped[512];
+	char outside[512];
+	snprintf(tile, sizeof(tile), "%s/mgba_test_tile.png", dir);
+	snprintf(cropped, sizeof(cropped), "%s/mgba_test_crop.png", dir);
+	snprintf(outside, sizeof(outside), "%s/mgba_test_outside.png", dir);
+
+	struct mScriptValue vTile = mSCRIPT_MAKE_CHARP(tile);
+	struct mScriptValue vCropped = mSCRIPT_MAKE_CHARP(cropped);
+	struct mScriptValue vOutside = mSCRIPT_MAKE_CHARP(outside);
+	lua->setGlobal(lua, "tile", &vTile);
+	lua->setGlobal(lua, "cropped", &vCropped);
+	lua->setGlobal(lua, "outside", &vOutside);
+
+	TEST_PROGRAM("assert(emu:screenshotRegion(0, 0, 8, 8, tile, 8))");
+	TEST_PROGRAM("assert(emu:screenshotRegion(230, 150, 100, 100, cropped, 1))");
+	// A crop that starts past the edge has nothing to sample.
+	TEST_PROGRAM("assert(not emu:screenshotRegion(400, 400, 8, 8, outside, 1))");
+
+	// image.load is the namespace function exported by mScriptContextAttachImage.
+	TEST_PROGRAM("im = image.load(tile)");
+	TEST_PROGRAM("assert(im)");
+	TEST_PROGRAM("assert(im.width == 64)");
+	TEST_PROGRAM("assert(im.height == 64)");
+
+	// 240 by 160 screen, a 100 by 100 crop from x=230, y=150 leaves 10 by 10.
+	TEST_PROGRAM("im = image.load(cropped)");
+	TEST_PROGRAM("assert(im)");
+	TEST_PROGRAM("assert(im.width == 10)");
+	TEST_PROGRAM("assert(im.height == 10)");
+
+	TEST_PROGRAM("emu:flushDebuggerEvents()");
+	mScriptContextDeinit(&context);
+	TEARDOWN_CORE;
+	free(buffer);
+}
+
 #ifdef M_CORE_GBA
 M_TEST_DEFINE(readWriteRegisterGBA) {
 	SETUP_LUA;
@@ -1141,6 +1198,7 @@ M_TEST_SUITE_DEFINE_SETUP_TEARDOWN(mScriptCore,
 	cmocka_unit_test(memoryWriteRange),
 	cmocka_unit_test(logging),
 	cmocka_unit_test(screenshot),
+	cmocka_unit_test(screenshotRegion),
 #ifdef M_CORE_GBA
 	cmocka_unit_test(readWriteRegisterGBA),
 #endif

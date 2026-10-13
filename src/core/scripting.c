@@ -9,6 +9,8 @@
 #include <mgba/core/serialize.h>
 #ifdef M_CORE_GBA
 #include <mgba/gba/interface.h>
+#include <mgba/internal/arm/decoder.h>
+#include <mgba/internal/gba/gba.h>
 #endif
 #include <mgba/script/base.h>
 #include <mgba/script/context.h>
@@ -781,6 +783,86 @@ struct mScriptValue* result = mScriptValueAlloc(mSCRIPT_TYPE_MS_S(mImage));
 // allocation.
 #define SCREENSHOT_REGION_MAX_SCALE 64
 #define SCREENSHOT_REGION_MAX_PIXELS (16 * 1024 * 1024)
+
+#ifdef M_CORE_GBA
+// Disassemble a run of instructions. mode is "thumb", "arm" or "auto", and the
+// default is thumb because that is what a GBA game is made of. Auto is a guess
+// and admits it: nothing in an instruction says it is ARM mode, and Radical Red
+// is mixed, its ARM instructions having turned up while tracing rather than by
+// looking for them. A caller that knows says so.
+static struct mScriptValue* _mScriptCoreDisasm(struct mScriptCoreAdapter* adapter, uint32_t address, uint32_t count, const char* mode) {
+	struct mCore* core = adapter->core;
+	struct GBA* gba = core->board;
+	bool arm = mode && !strcmp(mode, "arm");
+	bool guess = mode && !strcmp(mode, "auto");
+	// 96 bytes per line covers an address, its bytes and the longest mnemonic the
+	// formatter produces. Bounded so a caller cannot ask for a disassembly large
+	// enough to matter.
+	size_t cap = (size_t) count * 96 + 64;
+	char* buf = malloc(cap);
+	size_t used = 0;
+	uint32_t i;
+	struct mScriptValue* result;
+	if (!count) {
+		return mScriptStringCreateFromBytes("", 0);
+	}
+	if (!buf) {
+		return mScriptStringCreateFromBytes("", 0);
+	}
+	buf[0] = '\0';
+	for (i = 0; i < count; ++i) {
+		char text[128];
+		struct ARMInstructionInfo info;
+		struct ARMInstructionInfo info2;
+		struct ARMInstructionInfo combined;
+		uint32_t raw;
+		uint16_t lo, hi;
+		int written = -1;
+		if (used + 96 >= cap) {
+			break;
+		}
+		lo = core->busRead16(core, address);
+		hi = core->busRead16(core, address + 2);
+		raw = lo | (hi << 16);
+		text[0] = '\0';
+		if (!arm) {
+			ARMDecodeThumb(lo, &info);
+			ARMDecodeThumb(hi, &info2);
+			if (ARMDecodeThumbCombine(&info, &info2, &combined)) {
+				written = ARMDisassemble(&combined, gba->cpu, NULL, address + 4, text, sizeof(text));
+				if (written > 0) {
+					used += (size_t) snprintf(buf + used, cap - used, "%08X  %04X %04X\t%s\n", address, lo, hi, text);
+					address += 4;
+					continue;
+				}
+			}
+			written = ARMDisassemble(&info, gba->cpu, NULL, address + 4, text, sizeof(text));
+			if (written > 0) {
+				used += (size_t) snprintf(buf + used, cap - used, "%08X  %04X    \t%s\n", address, lo, text);
+				address += 2;
+				continue;
+			}
+		}
+		if (arm || guess) {
+			struct ARMInstructionInfo armInfo;
+			ARMDecodeARM(raw, &armInfo);
+			written = ARMDisassemble(&armInfo, gba->cpu, NULL, address + 8, text, sizeof(text));
+			if (written > 0) {
+				used += (size_t) snprintf(buf + used, cap - used, "%08X  %08X\t%s\n", address, raw, text);
+				address += 4;
+				continue;
+			}
+		}
+		// Nothing decoded here. Say so and step a halfword, so walking a data
+		// region still yields an offset rather than stopping dead.
+		used += (size_t) snprintf(buf + used, cap - used, "%08X  %04X    \t(n/a)\n", address, lo);
+		address += 2;
+	}
+	result = mScriptStringCreateFromBytes(buf, used);
+	free(buf);
+	return result;
+}
+#endif
 
 // Read one pixel of the framebuffer in the layout the build was configured for.
 // The core hands over its own buffer rather than an mImage, so the format has to
@@ -1777,6 +1859,9 @@ static void _mScriptCoreAdapterWrite32(struct mScriptCoreAdapter* adapter, uint3
 }
 
 mSCRIPT_DECLARE_STRUCT(mScriptCoreAdapter);
+#ifdef M_CORE_GBA
+mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, WSTR, disasm, _mScriptCoreDisasm, 3, U32, address, U32, count, CHARP, mode);
+#endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, W(mCore), _get, _mScriptCoreAdapterGet, 1, CHARP, name);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, _deinit, _mScriptCoreAdapterDeinit, 0);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, reset, _mScriptCoreAdapterReset, 0);
@@ -1824,6 +1909,13 @@ mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, setRangeWatchpoint)
 	mSCRIPT_NO_DEFAULT,
 	mSCRIPT_S32(-1)
 mSCRIPT_DEFINE_DEFAULTS_END;
+#ifdef M_CORE_GBA
+mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, disasm)
+	mSCRIPT_NO_DEFAULT,
+	mSCRIPT_NO_DEFAULT,
+	mSCRIPT_CHARP("thumb")
+mSCRIPT_DEFINE_DEFAULTS_END;
+#endif
 #endif
 
 mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
@@ -1879,6 +1971,10 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 	mSCRIPT_DEFINE_DOCSTRING("Run until the next frame, checking breakpoints as it goes")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, runFrame)
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
+#endif
+#ifdef M_CORE_GBA
+	mSCRIPT_DEFINE_DOCSTRING("Disassemble count instructions at address. mode is thumb, arm or auto, default thumb")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, disasm)
 #endif
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)
@@ -2155,3 +2251,4 @@ void mScriptContextDetachCore(struct mScriptContext* context) {
 
 	mScriptContextRemoveGlobal(context, "emu");
 }
+

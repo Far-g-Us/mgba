@@ -227,6 +227,15 @@ struct mScriptDebugger {
 };
 #endif
 
+// An opaque blob of core state, owned by the adapter until it is cleared or the
+// adapter goes away. The core only ever sees the bytes.
+struct mScriptSnapshot {
+	struct mScriptSnapshot* next;
+	int32_t id;
+	void* data;
+	size_t size;
+};
+
 struct mScriptCoreAdapter {
 	struct mCore* core;
 	struct mScriptContext* context;
@@ -234,6 +243,10 @@ struct mScriptCoreAdapter {
 #ifdef ENABLE_DEBUGGERS
 	struct mScriptDebugger debugger;
 #endif
+	// Snapshots taken by emu:saveStateSnapshot. Held as a list of opaque core
+	// state blobs so a script can put the machine back the way it found it after
+	// stepping somewhere it did not mean to.
+	struct mScriptSnapshot* snapshots;
 	struct mRumble rumble;
 	struct mRumbleIntegrator rumbleIntegrator;
 	struct mRumble* oldRumble;
@@ -246,6 +259,101 @@ struct mScriptCoreAdapter {
 	struct GBALuminanceSource* oldLuminance;
 #endif
 };
+// emu:saveStateSnapshot() and emu:loadStateSnapshot() are for stepping with an
+// undo: take a snapshot, run somewhere, and put the machine back exactly as it
+// was. The snapshot stays in memory and is never written to disk, because a
+// script that wanted it on disk wants a save state file and core->saveStateNamed
+// already writes one.
+//
+// Saving is neither free nor small, so snapshots are explicit: nothing is captured
+// behind a script's back and there is no cap to exceed.
+static struct mScriptSnapshot* _findSnapshot(struct mScriptCoreAdapter* adapter, int32_t id) {
+	struct mScriptSnapshot* snapshot = adapter->snapshots;
+	while (snapshot) {
+		if (snapshot->id == id) {
+			return snapshot;
+		}
+		snapshot = snapshot->next;
+	}
+	return NULL;
+}
+
+static bool _mScriptCoreClearStateSnapshot(struct mScriptCoreAdapter* adapter, int32_t id);
+
+static int32_t _mScriptCoreSaveStateSnapshot(struct mScriptCoreAdapter* adapter) {
+	struct mCore* core = adapter->core;
+	struct mScriptSnapshot* snapshot;
+	size_t size;
+	if (!core->stateSize || !core->saveState || !core->loadState) {
+		return 0;
+	}
+	size = core->stateSize(core);
+	if (!size) {
+		return 0;
+	}
+	snapshot = malloc(sizeof(*snapshot));
+	if (!snapshot) {
+		return 0;
+	}
+	snapshot->data = malloc(size);
+	if (!snapshot->data) {
+		free(snapshot);
+		return 0;
+	}
+	snapshot->size = size;
+	snapshot->next = NULL;
+	snapshot->id = 1;
+	if (adapter->snapshots) {
+		struct mScriptSnapshot* last = adapter->snapshots;
+		while (last->next) {
+			last = last->next;
+		}
+		last->next = snapshot;
+		snapshot->id = last->id + 1;
+	} else {
+		adapter->snapshots = snapshot;
+	}
+	if (!core->saveState(core, snapshot->data)) {
+		_mScriptCoreClearStateSnapshot(adapter, snapshot->id);
+		return 0;
+	}
+	return snapshot->id;
+}
+
+static bool _mScriptCoreLoadStateSnapshot(struct mScriptCoreAdapter* adapter, int32_t id) {
+	struct mScriptSnapshot* snapshot = _findSnapshot(adapter, id);
+	if (!snapshot || !adapter->core->loadState) {
+		return false;
+	}
+	return adapter->core->loadState(adapter->core, snapshot->data);
+}
+
+static bool _mScriptCoreClearStateSnapshot(struct mScriptCoreAdapter* adapter, int32_t id) {
+	struct mScriptSnapshot** link = &adapter->snapshots;
+	while (*link) {
+		struct mScriptSnapshot* snapshot = *link;
+		if (snapshot->id == id) {
+			*link = snapshot->next;
+			free(snapshot->data);
+			free(snapshot);
+			return true;
+		}
+		link = &snapshot->next;
+	}
+	return false;
+}
+
+static void _mScriptCoreClearStateSnapshots(struct mScriptCoreAdapter* adapter) {
+	struct mScriptSnapshot* snapshot = adapter->snapshots;
+	while (snapshot) {
+		struct mScriptSnapshot* next = snapshot->next;
+		free(snapshot->data);
+		free(snapshot);
+		snapshot = next;
+	}
+	adapter->snapshots = NULL;
+}
+
 
 #define CALCULATE_SEGMENT_INFO \
 	uint32_t segmentSize = adapter->block.end - adapter->block.start; \
@@ -1867,6 +1975,7 @@ static uint64_t _mScriptCoreAdapterCurrentCycle(struct mScriptCoreAdapter* adapt
 #endif
 
 static void _mScriptCoreAdapterDeinit(struct mScriptCoreAdapter* adapter) {
+	_mScriptCoreClearStateSnapshots(adapter);
 	_clearMemoryMap(adapter->context, adapter, false);
 	adapter->memory.type->free(&adapter->memory);
 #ifdef ENABLE_DEBUGGERS
@@ -2050,6 +2159,9 @@ mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S64, setRangeWat
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, runFrame, _mScriptCoreAdapterRunFrame, 0);
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearBreakpoint, _mScriptCoreAdapterClearBreakpoint, 1, S64, cbid);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, saveStateSnapshot, _mScriptCoreSaveStateSnapshot, 0);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadStateSnapshot, _mScriptCoreLoadStateSnapshot, 1, S32, id);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearStateSnapshot, _mScriptCoreClearStateSnapshot, 1, S32, id);
 
 mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, setBreakpoint)
 	mSCRIPT_NO_DEFAULT,
@@ -2143,6 +2255,12 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #endif
 #endif
+	mSCRIPT_DEFINE_DOCSTRING("Capture the machine state and return a handle, or 0 if the core cannot save state")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, saveStateSnapshot)
+	mSCRIPT_DEFINE_DOCSTRING("Put the machine back the way a snapshot found it")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadStateSnapshot)
+	mSCRIPT_DEFINE_DOCSTRING("Release a snapshot and its memory")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, clearStateSnapshot)
 #ifdef M_CORE_GBA
 #ifdef ENABLE_DEBUGGERS
 	mSCRIPT_DEFINE_DOCSTRING("Disassemble count instructions at address. mode is thumb, arm or auto, default thumb")

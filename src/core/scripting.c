@@ -1393,6 +1393,14 @@ static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
 
 	static void _scriptDebuggerEntered(struct mDebuggerModule* debugger, enum mDebuggerEntryReason reason, struct mDebuggerEntryInfo* info) {
 	struct mScriptDebugger* scriptDebugger = (struct mScriptDebugger*) debugger;
+	// Clear the pause before anything else, including the returns below.
+	// mDebuggerEnter sets isPaused on every module unconditionally before
+	// calling into it, and _scriptDebuggerPaused is empty, so a module left
+	// paused here keeps the debugger in DEBUGGER_PAUSED, where the run loop has
+	// no branch that steps the core. The CPU then never advances and no
+	// breakpoint can ever fire again. Nothing here wants to hold the debugger:
+	// callbacks are deferred to emu:flushDebuggerEvents by design.
+	debugger->isPaused = false;
 	// No lookup here: the event records the id and the delivery resolves it,
 	// so a breakpoint cleared in between cannot leave a dangling pointer behind.
 	switch (reason) {
@@ -1433,8 +1441,6 @@ event->info.target = NULL;
 		event->hasPc = reason == DEBUGGER_ENTER_WATCHPOINT && info->pc >= 0;
 		event->pc = event->hasPc ? (uint32_t) info->pc : 0;
 	}
-
-	debugger->isPaused = false;
 }
 
 	// Deliver everything the debugger queued so far. A script calls this through

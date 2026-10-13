@@ -97,6 +97,12 @@ struct mCore* mCoreCreate(enum mPlatform platform) {
 
 struct mCore* mCoreFind(const char* path) {
 	struct mCore* core = NULL;
+	// mCoreFindVF already refuses a NULL file; the path form has to refuse a NULL
+	// path for the same reason, since a caller with nothing to open should get
+	// nothing back rather than be handed to VDirOpenArchive. Test findNullPath.
+	if (!path) {
+		return NULL;
+	}
 #if defined(ENABLE_VFS) && defined(ENABLE_DIRECTORIES)
 	struct VDir* archive = VDirOpenArchive(path);
 	if (archive) {

@@ -1308,6 +1308,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	static struct mScriptValue keyAccessType = mSCRIPT_CHARP("accessType");
 	static struct mScriptValue keyPc = mSCRIPT_CHARP("pc");
 	static struct mScriptValue keySource = mSCRIPT_CHARP("source");
+	static struct mScriptValue keyCpuPc = mSCRIPT_CHARP("cpuPc");
 
 	struct mScriptValue valAddress = mSCRIPT_MAKE_U32(info->address);
 	struct mScriptValue valWidth = mSCRIPT_MAKE_S32(info->width);
@@ -1317,6 +1318,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	struct mScriptValue valAccessType;
 	struct mScriptValue valPc;
 	struct mScriptValue valSource;
+	struct mScriptValue valCpuPc;
 
 	mScriptTableInsert(&cbInfo, &keyAddress, &valAddress);
 	// Present only when the access came from the CPU. A DMA transfer has no
@@ -1341,6 +1343,20 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 		// has to guess why.
 		valSource = mSCRIPT_MAKE_S32(info->type.wp.accessSource);
 		mScriptTableInsert(&cbInfo, &keySource, &valSource);
+
+		// Where the processor itself was, for every event including the ones with
+		// no instruction behind them. Kept separate from pc on purpose: for a DMA
+		// transfer this is not the instruction that caused it and must not be read
+		// as one, but it is the only position available that a tracer can correlate
+		// a transfer against, and a caller should not have to settle for no value.
+		{
+			int32_t out = 0;
+			struct mDebugger* dbg = scriptDebugger->d.p;
+			if (dbg && dbg->core && dbg->core->readRegister(dbg->core, "pc", &out)) {
+				valCpuPc = mSCRIPT_MAKE_U32((uint32_t) out);
+				mScriptTableInsert(&cbInfo, &keyCpuPc, &valCpuPc);
+			}
+		}
 
 		valOldValue = mSCRIPT_MAKE_S32(info->type.wp.oldValue);
 		valNewValue = mSCRIPT_MAKE_S32(info->type.wp.newValue);

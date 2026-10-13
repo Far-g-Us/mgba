@@ -790,10 +790,19 @@ static void _readChunk(struct mCore* core, uint32_t address, uint32_t chunk, uin
 // through to busWrite8, which the bus discards exactly as it discards write8.
 static void _writeChunk(struct mCore* core, uint32_t address, uint32_t chunk, const uint8_t* buffer) {
 	size_t avail = 0;
-	uint8_t* direct = mCoreGetMemoryBlockMasked(core, address, &avail, mCORE_MEMORY_MAPPED | mCORE_MEMORY_WRITE);
-	if (direct && chunk <= avail) {
-		memcpy(direct, buffer, chunk);
-		return;
+	size_t wormAvail = 0;
+	uint8_t* direct;
+	// WORM is ROM and BIOS: writable while it is being loaded, read-only after.
+	// Such a block is also marked WRITE, so a guard of MAPPED|WRITE does not
+	// exclude it, and writing it directly would change bytes that the bus refuses
+	// to change. That is how ROM ended up editable here while emu:write8, which
+	// goes through the bus, left it alone. Anything WORM takes the slow path.
+	if (!mCoreGetMemoryBlockMasked(core, address, &wormAvail, mCORE_MEMORY_MAPPED | mCORE_MEMORY_WORM)) {
+		direct = mCoreGetMemoryBlockMasked(core, address, &avail, mCORE_MEMORY_MAPPED | mCORE_MEMORY_WRITE);
+		if (direct && chunk <= avail) {
+			memcpy(direct, buffer, chunk);
+			return;
+		}
 	}
 	uint32_t i;
 	for (i = 0; i < chunk; ++i) {

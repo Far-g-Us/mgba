@@ -791,6 +791,7 @@ struct mScriptValue* result = mScriptValueAlloc(mSCRIPT_TYPE_MS_S(mImage));
 #define SCREENSHOT_REGION_MAX_PIXELS (16 * 1024 * 1024)
 
 #ifdef M_CORE_GBA
+#ifdef ENABLE_DEBUGGERS
 // Disassemble a run of instructions. mode is "thumb", "arm" or "auto", and the
 // default is thumb because that is what a GBA game is made of. Auto is a guess
 // and admits it: nothing in an instruction says it is ARM mode, and Radical Red
@@ -868,6 +869,7 @@ static struct mScriptValue* _mScriptCoreDisasm(struct mScriptCoreAdapter* adapte
 	free(buf);
 	return result;
 }
+#endif
 #endif
 
 // Read one pixel of the framebuffer in the layout the build was configured for.
@@ -1361,6 +1363,10 @@ static void _scriptDebuggerInit(struct mDebuggerModule* debugger) {
 	scriptDebugger->pending = NULL;
 	scriptDebugger->pendingCount = 0;
 	scriptDebugger->pendingCapacity = 0;
+	free(scriptDebugger->traceIds);
+	scriptDebugger->traceIds = NULL;
+	scriptDebugger->traceIdCount = 0;
+	scriptDebugger->traceIdCapacity = 0;
 	HashTableDeinit(&scriptDebugger->cbidMap);
 	HashTableDeinit(&scriptDebugger->bpidMap);
 	HashTableDeinit(&scriptDebugger->breakpoints);
@@ -1688,20 +1694,21 @@ static int32_t _mScriptCoreLogTrace(struct mScriptCoreAdapter* adapter, struct m
 		if (handle <= 0) {
 			break;
 		}
-		// Recorded so clearLogTrace can take these back; the script never sees
-		// the id. Failing to grow the list is not worth refusing the point over,
-		// but it does mean that point can no longer be disarmed.
+		// A point the list could not take would stay armed with no handle on
+		// record, so runFrame would keep stepping for the rest of the session.
+		// Taking it back now and stopping costs the tail of the trace, which is
+		// visible, over a leak that is not.
 		if (adapter->debugger.traceIdCount == adapter->debugger.traceIdCapacity) {
 			size_t capacity = adapter->debugger.traceIdCapacity ? adapter->debugger.traceIdCapacity * 2 : 64;
 			int64_t* grown = realloc(adapter->debugger.traceIds, capacity * sizeof(*adapter->debugger.traceIds));
-			if (grown) {
-				adapter->debugger.traceIds = grown;
-				adapter->debugger.traceIdCapacity = capacity;
+			if (!grown) {
+				_mScriptCoreAdapterClearBreakpoint(adapter, handle);
+				break;
 			}
+			adapter->debugger.traceIds = grown;
+			adapter->debugger.traceIdCapacity = capacity;
 		}
-		if (adapter->debugger.traceIdCount < adapter->debugger.traceIdCapacity) {
-			adapter->debugger.traceIds[adapter->debugger.traceIdCount++] = handle;
-		}
+		adapter->debugger.traceIds[adapter->debugger.traceIdCount++] = handle;
 		placed++;
 		if (placed >= LOGTRACE_MAX_POINTS) {
 			break;
@@ -1754,10 +1761,11 @@ static int32_t _mScriptCoreDroppedDebuggerEvents(struct mScriptCoreAdapter* adap
 // loop. Without breakpoints this stays the plain core call, so the common case
 // costs nothing.
 //
-// The loop stops as soon as the frame counter reaches the target, checked before
-// each step rather than only after it: an instruction is atomic here, so there is
-// no half step to unwind, but checking first means the frame ends on the same
-// instruction the plain path would have ended on.
+// The loop stops as soon as the frame counter reaches the target, but only
+// after checking the breakpoints, because the instruction that completed the
+// frame is still one the debugger owes the script. Skipping that check would
+// lose a hit on every frame boundary and, since nothing counts a check that
+// never ran, droppedDebuggerEvents could not report it either.
 static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
 	struct mCore* core = adapter->core;
 	struct mDebugger* debugger = adapter->debugger.d.p;
@@ -1770,9 +1778,6 @@ static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
 	target = core->frameCounter(core) + 1;
 	while (core->frameCounter(core) < target && budget-- > 0) {
 		core->step(core);
-		if (core->frameCounter(core) >= target) {
-			break;
-		}
 		debugger->platform->checkBreakpoints(debugger->platform);
 	}
 }
@@ -1834,6 +1839,15 @@ static bool _mScriptCoreAdapterClearBreakpoint(struct mScriptCoreAdapter* adapte
 	HashTableRemoveBinary(&point->callbacks, &cbid, sizeof(cbid));
 
 if (!HashTableSize(&point->callbacks)) {
+		// Only retire the point when no dispatch is walking it. A script that
+		// stops its own trace from inside the callback arrives here with inUse
+		// set, and dropping the entry then would orphan the object: the entry is
+		// what _freeBreakpoint is reached through, and _runCallbacks clears inUse
+		// only after it has already looked the entry up. The tail of _runCallbacks
+		// retires it once the callbacks are done, with the object still reachable.
+		if (point->inUse) {
+			return true;
+		}
 		struct mDebuggerModule* module = &adapter->debugger.d;
 		module->p->platform->clearBreakpoint(module->p->platform, point->id);
 
@@ -1996,10 +2010,15 @@ static void _mScriptCoreAdapterWrite32(struct mScriptCoreAdapter* adapter, uint3
 
 mSCRIPT_DECLARE_STRUCT(mScriptCoreAdapter);
 #ifdef M_CORE_GBA
+// All four are declared under the same guards as their definitions, which sit in
+// the debugger block: a GBA core built without debuggers has no implementation
+// to bind to, and the disassembler itself is only declared there.
+#ifdef ENABLE_DEBUGGERS
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, WSTR, disasm, _mScriptCoreDisasm, 3, U32, address, U32, count, CHARP, mode);
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S32, logTrace, _mScriptCoreLogTrace, 4, WRAPPER, callback, U32, start, U32, end, CHARP, mode);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, clearLogTrace, _mScriptCoreClearLogTrace, 0);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, droppedDebuggerEvents, _mScriptCoreDroppedDebuggerEvents, 0);
+#endif
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, W(mCore), _get, _mScriptCoreAdapterGet, 1, CHARP, name);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, _deinit, _mScriptCoreAdapterDeinit, 0);
@@ -2008,7 +2027,11 @@ mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, WTABLE, setRotationCallbacks, 
 // Delivers debugger events collected during the frames that have run so far.
 // Calling into Lua from the debugger hook breaks the script context, so the
 // events are queued and a script drains them at a point where it is safe.
+#ifdef ENABLE_DEBUGGERS
+#ifdef ENABLE_DEBUGGERS
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, flushDebuggerEvents, _mScriptCoreAdapterFlushDebugger, 0);
+#endif
+#endif
 
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, U32, read8, _mScriptCoreAdapterRead8, 1, U32, address);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, U32, read16, _mScriptCoreAdapterRead16, 1, U32, address);
@@ -2112,18 +2135,23 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 	mSCRIPT_DEFINE_DOCSTRING(
 		"Set a watchpoint in a given range of a given type. Note that the range is exclusive on the end, "
 		"as though you've added the size, i.e. a 4-byte watch would specify the maximum as the minimum address + 4"
-)	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
+)
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
 	mSCRIPT_DEFINE_DOCSTRING("Run until the next frame, checking breakpoints as it goes")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, runFrame)
+#ifdef ENABLE_DEBUGGERS
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #endif
+#endif
 #ifdef M_CORE_GBA
+#ifdef ENABLE_DEBUGGERS
 	mSCRIPT_DEFINE_DOCSTRING("Disassemble count instructions at address. mode is thumb, arm or auto, default thumb")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, disasm)
 	mSCRIPT_DEFINE_DOCSTRING("Put a breakpoint on every instruction in a range and pass each hit to the callback")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, logTrace)
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, clearLogTrace)
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, droppedDebuggerEvents)
+#endif
 #endif
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)

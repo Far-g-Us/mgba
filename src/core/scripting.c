@@ -1307,6 +1307,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	static struct mScriptValue keyNewValue = mSCRIPT_CHARP("newValue");
 	static struct mScriptValue keyAccessType = mSCRIPT_CHARP("accessType");
 	static struct mScriptValue keyPc = mSCRIPT_CHARP("pc");
+	static struct mScriptValue keySource = mSCRIPT_CHARP("source");
 
 	struct mScriptValue valAddress = mSCRIPT_MAKE_U32(info->address);
 	struct mScriptValue valWidth = mSCRIPT_MAKE_S32(info->width);
@@ -1315,6 +1316,7 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	struct mScriptValue valNewValue;
 	struct mScriptValue valAccessType;
 	struct mScriptValue valPc;
+	struct mScriptValue valSource;
 
 	mScriptTableInsert(&cbInfo, &keyAddress, &valAddress);
 	// Present only when the access came from the CPU. A DMA transfer has no
@@ -1332,6 +1334,14 @@ static void _scriptDebuggerUpdate(struct mDebuggerModule* debugger) {
 	}
 
 	if (reason == DEBUGGER_ENTER_WATCHPOINT) {
+		// Which engine performed the access. A read watchpoint over a large slice
+		// of the ROM is mostly not the program: the BIOS expands the game as it
+		// boots, and copies and DMA move bytes without any instruction behind
+		// them. Without this the caller can only see that a counter is missing and
+		// has to guess why.
+		valSource = mSCRIPT_MAKE_S32(info->type.wp.accessSource);
+		mScriptTableInsert(&cbInfo, &keySource, &valSource);
+
 		valOldValue = mSCRIPT_MAKE_S32(info->type.wp.oldValue);
 		valNewValue = mSCRIPT_MAKE_S32(info->type.wp.newValue);
 		valAccessType = mSCRIPT_MAKE_S32(info->type.wp.accessType);

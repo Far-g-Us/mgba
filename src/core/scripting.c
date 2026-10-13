@@ -11,6 +11,9 @@
 #include <mgba/gba/interface.h>
 #include <mgba/internal/arm/decoder.h>
 #include <mgba/internal/debugger/symbols.h>
+#ifdef ENABLE_GDB_STUB
+#include <mgba/internal/debugger/gdb-stub.h>
+#endif
 #include <mgba/internal/gba/gba.h>
 #endif
 #include <mgba/script/base.h>
@@ -288,6 +291,9 @@ struct mScriptCoreAdapter {
 	// state blobs so a script can put the machine back the way it found it after
 	// stepping somewhere it did not mean to.
 	struct mScriptSnapshot* snapshots;
+#ifdef ENABLE_GDB_STUB
+	struct GDBStub* gdb;
+#endif
 	struct mRumble rumble;
 	struct mRumbleIntegrator rumbleIntegrator;
 	struct mRumble* oldRumble;
@@ -394,6 +400,70 @@ static void _mScriptCoreClearStateSnapshots(struct mScriptCoreAdapter* adapter) 
 	}
 	adapter->snapshots = NULL;
 }
+
+static bool _setupDebugger(struct mScriptCoreAdapter* adapter);
+
+#ifdef ENABLE_GDB_STUB
+// Open a GDB server on a port so an outside debugger can drive the very core
+// this script is driving. The stub is not a second emulation: it is attached to
+// our debugger as an ordinary module, which is what makes a breakpoint set from
+// gdb land on the same core a script's own watchpoints land on.
+//
+// The stub is only serviced from runFrame, so gdb sees the core move when a
+// script runs frames and not while a script is thinking. That is the honest
+// coupling: the script owns the clock.
+//
+// Bound to loopback and never to a wildcard address. An open debugger port on a
+// machine that is not isolated is a remote code execution hole, and a harness has
+// no business offering one.
+static bool _mScriptCoreGDBStart(struct mScriptCoreAdapter* adapter, int32_t port) {
+	struct GDBStub* gdb;
+	struct Address loopback = { .version = IPV4, .ipv4 = 0x7F000001 };
+	if (!_setupDebugger(adapter)) {
+		return false;
+	}
+	if (adapter->gdb) {
+		return false;
+	}
+	if (port <= 0 || port > 65535) {
+		return false;
+	}
+	gdb = malloc(sizeof(*gdb));
+	if (!gdb) {
+		return false;
+	}
+	// struct GDBStub starts with its module, so the module pointer is the stub.
+	GDBStubCreate(gdb);
+	if (!GDBStubListen(gdb, port, &loopback, GDB_WATCHPOINT_STANDARD_LOGIC)) {
+		GDBStubShutdown(gdb);
+		free(gdb);
+		return false;
+	}
+	// AttachModule fills in the back pointer and appends to the module list.
+	mDebuggerAttachModule(adapter->debugger.d.p, &gdb->d);
+	adapter->gdb = gdb;
+	return true;
+}
+
+// Whether a client is talking to the stub right now. A listening socket is not
+// the same thing as an attached debugger, and a script that waits for gdb has to
+// tell those apart or it will never notice that gdb hung up.
+static bool _mScriptCoreGDBConnected(struct mScriptCoreAdapter* adapter) {
+	return adapter->gdb && !SOCKET_FAILED(adapter->gdb->connection);
+}
+
+static void _mScriptCoreGDBStop(struct mScriptCoreAdapter* adapter) {
+	if (!adapter->gdb) {
+		return;
+	}
+	// Detaching runs the stub's own deinit, which is what closes the socket.
+	// Calling Hangup and Shutdown here as well would close a socket that is
+	// already closed.
+	mDebuggerDetachModule(adapter->debugger.d.p, &adapter->gdb->d);
+	free(adapter->gdb);
+	adapter->gdb = NULL;
+}
+#endif
 
 // Load a symbol file so getSymbolic has something to resolve against.
 //
@@ -1977,6 +2047,13 @@ static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
 	struct mDebugger* debugger = adapter->debugger.d.p;
 	uint32_t target;
 	int64_t budget = SCREENSHOT_REGION_MAX_PIXELS;
+#ifdef ENABLE_GDB_STUB
+	// The stub is driven from here and not from a run loop of its own: a script
+	// owns the clock, so gdb sees the core move when a script runs frames.
+	if (adapter->gdb) {
+		GDBStubUpdate(adapter->gdb, 0);
+	}
+#endif
 	if (!debugger || !debugger->platform->hasBreakpoints(debugger->platform)) {
 		core->runFrame(core);
 		return;
@@ -2073,6 +2150,9 @@ static uint64_t _mScriptCoreAdapterCurrentCycle(struct mScriptCoreAdapter* adapt
 #endif
 
 static void _mScriptCoreAdapterDeinit(struct mScriptCoreAdapter* adapter) {
+#ifdef ENABLE_GDB_STUB
+	_mScriptCoreGDBStop(adapter);
+#endif
 	_mScriptCoreClearStateSnapshots(adapter);
 	_clearMemoryMap(adapter->context, adapter, false);
 	adapter->memory.type->free(&adapter->memory);
@@ -2261,6 +2341,11 @@ mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, saveStateSnapshot, _mScri
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, log, _mScriptCoreLog, 2, CHARP, level, CHARP, message);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadSymbols, _mScriptCoreLoadSymbols, 1, CHARP, path);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, WSTR, getSymbolic, _mScriptCoreGetSymbolic, 1, U32, address);
+#ifdef ENABLE_GDB_STUB
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, gdbStart, _mScriptCoreGDBStart, 1, S32, port);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, gdbConnected, _mScriptCoreGDBConnected, 0);
+mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, gdbStop, _mScriptCoreGDBStop, 0);
+#endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, loadStateSnapshot, _mScriptCoreLoadStateSnapshot, 1, S32, id);
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearStateSnapshot, _mScriptCoreClearStateSnapshot, 1, S32, id);
 
@@ -2356,6 +2441,10 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #endif
 #endif
+	// These bindings sit under the same guard as their declarations above, which
+	// were filed next to clearBreakpoint and inherited its guard. Without this a
+	// build without debuggers binds names that were never declared.
+#ifdef ENABLE_DEBUGGERS
 	mSCRIPT_DEFINE_DOCSTRING("Capture the machine state and return a handle, or 0 if the core cannot save state")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, saveStateSnapshot)
 	mSCRIPT_DEFINE_DOCSTRING("Write a line to the emulator log under the Scripting category")
@@ -2364,10 +2453,19 @@ mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadSymbols)
 	mSCRIPT_DEFINE_DOCSTRING("Name of the symbol covering an address, or nil")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, getSymbolic)
+#ifdef ENABLE_GDB_STUB
+	mSCRIPT_DEFINE_DOCSTRING("Open a GDB server on a port so an outside debugger can drive this core")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, gdbStart)
+	mSCRIPT_DEFINE_DOCSTRING("Whether a debugger is attached to the stub")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, gdbConnected)
+	mSCRIPT_DEFINE_DOCSTRING("Close the GDB server and release the port")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, gdbStop)
+#endif
 	mSCRIPT_DEFINE_DOCSTRING("Put the machine back the way a snapshot found it")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, loadStateSnapshot)
 	mSCRIPT_DEFINE_DOCSTRING("Release a snapshot and its memory")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, clearStateSnapshot)
+#endif
 #ifdef M_CORE_GBA
 #ifdef ENABLE_DEBUGGERS
 	mSCRIPT_DEFINE_DOCSTRING("Disassemble count instructions at address. mode is thumb, arm or auto, default thumb")

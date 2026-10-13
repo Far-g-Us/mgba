@@ -201,6 +201,12 @@ struct mScriptDebugger {
 	size_t pendingCapacity;
 	size_t pendingDropped;
 	bool reentered;
+	// Callback ids logTrace created. It does not hand them out, so without this
+	// list a script cannot take its points back and runFrame stays on its
+	// stepping path for the rest of the session.
+	int64_t* traceIds;
+	size_t traceIdCount;
+	size_t traceIdCapacity;
 };
 
 	struct mScriptDebuggerEvent {
@@ -1246,6 +1252,9 @@ static struct mScriptBreakpoint* _ensureBreakpoint(struct mScriptDebugger* debug
 		return point;
 	}
 	point = calloc(1, sizeof(*point));
+	if (!point) {
+		return NULL;
+	}
 	point->magic = SCRIPT_BREAKPOINT_MAGIC;
 	point->id = module->p->platform->setBreakpoint(module->p->platform, module, breakpoint);
 	point->name = name;
@@ -1269,6 +1278,9 @@ static struct mScriptBreakpoint* _ensureWatchpoint(struct mScriptDebugger* debug
 		return point;
 	}
 	point = calloc(1, sizeof(*point));
+	if (!point) {
+		return NULL;
+	}
 	point->magic = SCRIPT_BREAKPOINT_MAGIC;
 	point->id = module->p->platform->setWatchpoint(module->p->platform, module, watchpoint);
 	point->name = name;
@@ -1528,7 +1540,14 @@ static void _flushDebuggerEvents(struct mScriptDebugger* scriptDebugger) {
 	} else {
 		if (scriptDebugger->pendingCount == scriptDebugger->pendingCapacity) {
 			size_t capacity = scriptDebugger->pendingCapacity ? scriptDebugger->pendingCapacity * 2 : 64;
-			scriptDebugger->pending = realloc(scriptDebugger->pending, capacity * sizeof(*scriptDebugger->pending));
+			struct mScriptDebuggerEvent* grown = realloc(scriptDebugger->pending, capacity * sizeof(*scriptDebugger->pending));
+			if (!grown) {
+				// Taking the failed return would leave a null array with a nonzero
+				// capacity, and the next event would write through that null.
+				++scriptDebugger->pendingDropped;
+				return;
+			}
+			scriptDebugger->pending = grown;
 			scriptDebugger->pendingCapacity = capacity;
 		}
 		struct mScriptDebuggerEvent* event = &scriptDebugger->pending[scriptDebugger->pendingCount++];
@@ -1613,6 +1632,9 @@ static int64_t _mScriptCoreAdapterSetBreakpoint(struct mScriptCoreAdapter* adapt
 		return -1;
 	}
 	struct mScriptBreakpoint* point = _ensureBreakpoint(&adapter->debugger, &breakpoint);
+	if (!point) {
+		return -1;
+	}
 	return _addCallbackToBreakpoint(&adapter->debugger, point, callback);
 }
 
@@ -1634,6 +1656,8 @@ static int64_t _mScriptCoreAdapterSetBreakpoint(struct mScriptCoreAdapter* adapt
 // stepping path. That is the price of one breakpoint per instruction and it is
 // why the range is meant to be short.
 #define LOGTRACE_MAX_POINTS 2048
+
+static bool _mScriptCoreAdapterClearBreakpoint(struct mScriptCoreAdapter*, int64_t);
 
 static int32_t _mScriptCoreLogTrace(struct mScriptCoreAdapter* adapter, struct mScriptValue* callback, uint32_t start, uint32_t end, const char* mode) {
 	uint32_t step;
@@ -1664,12 +1688,58 @@ static int32_t _mScriptCoreLogTrace(struct mScriptCoreAdapter* adapter, struct m
 		if (handle <= 0) {
 			break;
 		}
+		// Recorded so clearLogTrace can take these back; the script never sees
+		// the id. Failing to grow the list is not worth refusing the point over,
+		// but it does mean that point can no longer be disarmed.
+		if (adapter->debugger.traceIdCount == adapter->debugger.traceIdCapacity) {
+			size_t capacity = adapter->debugger.traceIdCapacity ? adapter->debugger.traceIdCapacity * 2 : 64;
+			int64_t* grown = realloc(adapter->debugger.traceIds, capacity * sizeof(*adapter->debugger.traceIds));
+			if (grown) {
+				adapter->debugger.traceIds = grown;
+				adapter->debugger.traceIdCapacity = capacity;
+			}
+		}
+		if (adapter->debugger.traceIdCount < adapter->debugger.traceIdCapacity) {
+			adapter->debugger.traceIds[adapter->debugger.traceIdCount++] = handle;
+		}
 		placed++;
 		if (placed >= LOGTRACE_MAX_POINTS) {
 			break;
 		}
 	}
 	return (int32_t) placed;
+}
+
+// Take back everything logTrace armed. Its handles are not handed out, so without
+// this a script has no way to disarm them, and while they stay armed runFrame
+// keeps stepping. Only the ids logTrace created are removed, so a breakpoint the
+// script armed itself with setBreakpoint keeps its own callbacks and survives.
+static int32_t _mScriptCoreClearLogTrace(struct mScriptCoreAdapter* adapter) {
+	struct mScriptDebugger* debugger = &adapter->debugger;
+	int32_t removed = 0;
+	size_t i;
+	if (!debugger->d.p) {
+		return 0;
+	}
+	for (i = 0; i < debugger->traceIdCount; ++i) {
+		if (_mScriptCoreAdapterClearBreakpoint(adapter, debugger->traceIds[i])) {
+			++removed;
+		}
+	}
+	free(debugger->traceIds);
+	debugger->traceIds = NULL;
+	debugger->traceIdCount = 0;
+	debugger->traceIdCapacity = 0;
+	return removed;
+}
+
+// Events the debugger could not queue or deliver, and the cap it hit. Reading it
+// resets the count, so a tracer can notice that its output was incomplete instead
+// of silently trusting what it collected.
+static int32_t _mScriptCoreDroppedDebuggerEvents(struct mScriptCoreAdapter* adapter) {
+	size_t dropped = adapter->debugger.pendingDropped;
+	adapter->debugger.pendingDropped = 0;
+	return (int32_t) dropped;
 }
 
 #ifdef ENABLE_DEBUGGERS
@@ -1684,9 +1754,10 @@ static int32_t _mScriptCoreLogTrace(struct mScriptCoreAdapter* adapter, struct m
 // loop. Without breakpoints this stays the plain core call, so the common case
 // costs nothing.
 //
-// Stepping a whole frame is slow, so the loop is bounded by the frame boundary
-// and by a hard cap: a core that never advances its frame counter would
-// otherwise spin here forever.
+// The loop stops as soon as the frame counter reaches the target, checked before
+// each step rather than only after it: an instruction is atomic here, so there is
+// no half step to unwind, but checking first means the frame ends on the same
+// instruction the plain path would have ended on.
 static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
 	struct mCore* core = adapter->core;
 	struct mDebugger* debugger = adapter->debugger.d.p;
@@ -1699,6 +1770,9 @@ static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
 	target = core->frameCounter(core) + 1;
 	while (core->frameCounter(core) < target && budget-- > 0) {
 		core->step(core);
+		if (core->frameCounter(core) >= target) {
+			break;
+		}
 		debugger->platform->checkBreakpoints(debugger->platform);
 	}
 }
@@ -1720,6 +1794,9 @@ static int64_t _mScriptCoreAdapterSetWatchpoint(struct mScriptCoreAdapter* adapt
 		return -1;
 	}
 	struct mScriptBreakpoint* point = _ensureWatchpoint(&adapter->debugger, &watchpoint);
+	if (!point) {
+		return -1;
+	}
 	return _addCallbackToBreakpoint(&adapter->debugger, point, callback);
 }
 
@@ -1739,6 +1816,9 @@ static int64_t _mScriptCoreAdapterSetRangeWatchpoint(struct mScriptCoreAdapter* 
 		return -1;
 	}
 	struct mScriptBreakpoint* point = _ensureWatchpoint(&adapter->debugger, &watchpoint);
+	if (!point) {
+		return -1;
+	}
 	return _addCallbackToBreakpoint(&adapter->debugger, point, callback);
 }
 
@@ -1918,6 +1998,8 @@ mSCRIPT_DECLARE_STRUCT(mScriptCoreAdapter);
 #ifdef M_CORE_GBA
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, WSTR, disasm, _mScriptCoreDisasm, 3, U32, address, U32, count, CHARP, mode);
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S32, logTrace, _mScriptCoreLogTrace, 4, WRAPPER, callback, U32, start, U32, end, CHARP, mode);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, clearLogTrace, _mScriptCoreClearLogTrace, 0);
+mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, S32, droppedDebuggerEvents, _mScriptCoreDroppedDebuggerEvents, 0);
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, W(mCore), _get, _mScriptCoreAdapterGet, 1, CHARP, name);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, _deinit, _mScriptCoreAdapterDeinit, 0);
@@ -2040,6 +2122,8 @@ mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, disasm)
 	mSCRIPT_DEFINE_DOCSTRING("Put a breakpoint on every instruction in a range and pass each hit to the callback")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, logTrace)
+mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, clearLogTrace)
+mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, droppedDebuggerEvents)
 #endif
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)

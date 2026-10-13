@@ -776,11 +776,22 @@ struct mScriptValue* result = mScriptValueAlloc(mSCRIPT_TYPE_MS_S(mImage));
 }
 
 #ifdef ENABLE_VFS
+// A magnified glyph needs a handful of pixels per side. 64 covers 8x16 at 8x with
+// room to spare, and the cap on the product below is what actually bounds the
+// allocation.
+#define SCREENSHOT_REGION_MAX_SCALE 64
+#define SCREENSHOT_REGION_MAX_PIXELS (16 * 1024 * 1024)
+
 // Read one pixel of the framebuffer in the layout the build was configured for.
 // The core hands over its own buffer rather than an mImage, so the format has to
 // be spelled out once, exactly as _mScriptCoreTakeScreenshotToImage spells it.
 static uint32_t _readPixel(const void* pixels, size_t stride, unsigned x, unsigned y) {
-	const uint8_t* row = (const uint8_t*) pixels + y * stride;
+	// stride counts pixels, not bytes. mImageCreateFromConstBuffer multiplies it
+	// by the format depth itself, and setVideoBuffer is likewise handed a pitch
+	// divided by the bytes per pixel, so treating it as a byte count samples the
+	// wrong row: row 80 of a 240 wide frame starts 19200 bytes in, which is pixel
+	// 4800, or row 20.
+	const uint8_t* row = (const uint8_t*) pixels + y * stride * sizeof(mColor);
 #ifdef COLOR_16_BIT
 	return ((const uint16_t*) row)[x];
 #else
@@ -812,19 +823,31 @@ static bool _mScriptCoreScreenshotRegion(struct mCore* core, uint32_t x, uint32_
 	if (!pixels || !stride) {
 		return false;
 	}
-	// Clamp rather than refuse: a tracer working at the edge of the screen
-	// should get the part that exists instead of nothing at all.
+	// Clamp by subtraction, not by testing x + w against width: a script can pass
+	// w = 0xFFFFFFFF, and x + w then wraps to 0, which compares false and lets the
+	// unclamped value through. width - x cannot wrap, because x < width is already
+	// established above. A crop that reaches past the edge is clipped rather than
+	// refused, so a tracer working at a border still gets the part that exists.
 	if (x >= width) {
 		return false;
 	}
 	if (y >= height) {
 		return false;
 	}
-	if (x + w > width) {
+	if (w > width - x) {
 		w = width - x;
 	}
-	if (y + h > height) {
+	if (h > height - y) {
 		h = height - y;
+	}
+	// The output is w * scale by h * scale. Both are 32 bit and a script chooses
+	// both, so the product is checked in 64 bit rather than trusted: an unclamped
+	// scale of 858993459 would ask for a gigabyte and hundreds of millions of
+	// iterations, which is a way to hang the process rather than an answer.
+	if (scale > SCREENSHOT_REGION_MAX_SCALE
+			|| (uint64_t) w * scale > SCREENSHOT_REGION_MAX_PIXELS
+			|| (uint64_t) h * scale > SCREENSHOT_REGION_MAX_PIXELS) {
+		return false;
 	}
 #if !defined(COLOR_16_BIT)
 	image = mImageCreate(w * scale, h * scale, mCOLOR_XBGR8);
@@ -840,7 +863,10 @@ static bool _mScriptCoreScreenshotRegion(struct mCore* core, uint32_t x, uint32_
 		uint32_t sy = y + oy / scale;
 		for (ox = 0; ox < w * scale; ++ox) {
 			uint32_t sx = x + ox / scale;
-			mImageSetPixel(image, ox, oy, _readPixel(pixels, stride, sx, sy));
+			// Raw, not mImageSetPixel: the source is already in the image's own
+			// format, while mImageSetPixel reads the argument as ARGB8 and
+			// converts, which swaps red and blue on a 32 bit build.
+			mImageSetPixelRaw(image, ox, oy, _readPixel(pixels, stride, sx, sy));
 		}
 	}
 	bool ok = mImageSave(image, path, "png");

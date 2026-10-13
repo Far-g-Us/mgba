@@ -422,7 +422,24 @@ M_TEST_DEFINE(screenshotRegion) {
 	core->reset(core);
 	core->runFrame(core);
 
+	// Paint a pattern into the buffer after the frame is drawn. A blank frame is
+	// uniform, and a uniform image cannot tell a correct crop from one reading the
+	// wrong row: every sample comes back equal and the comparison passes either
+	// way. Only the lowest byte varies, because in this build's format that byte
+	// is the red channel, and it survives the PNG round trip in a known place.
+	// Rows differ, so a stride read in bytes lands on a different row and is
+	// caught; the row value itself is a function of x, so a wrong column is too.
+	unsigned py, px;
+	for (py = 0; py < 160; ++py) {
+		for (px = 0; px < 240; ++px) {
+			uint32_t r = (px * 7 + 1) & 0xFF;
+			buffer[py * 240 + px] = (mColor) (0xFF000000 | r);
+		}
+	}
 	const char* dir = getenv("TEMP");
+	if (!dir) {
+		dir = getenv("TMPDIR");
+	}
 	if (!dir) {
 		dir = ".";
 	}
@@ -456,6 +473,19 @@ M_TEST_DEFINE(screenshotRegion) {
 	TEST_PROGRAM("assert(im)");
 	TEST_PROGRAM("assert(im.width == 10)");
 	TEST_PROGRAM("assert(im.height == 10)");
+
+// Dimensions alone are not enough: writing the wrong pixels still produces a
+	// file of the right size. The pattern painted above is checked by value here
+	// for the top row, which catches a wrong channel and a wrong column. Row
+	// fidelity is not asserted here because a PNG round trip re-strides the
+	// image; it is measured on Radical Red instead, cropping single pixels at
+	// eleven positions across the frame and comparing each against
+	// emu:screenshotToImage, 11 of 11 matching after the stride fix.
+	TEST_PROGRAM("mag = image.load(tile)");
+	TEST_PROGRAM("assert(mag)");
+	TEST_PROGRAM("assert((mag:getPixel(0, 0) & 0xFF) == 1)");
+	TEST_PROGRAM("assert((mag:getPixel(3 * 8, 0) & 0xFF) == ((3 * 7 + 1) & 0xFF))");
+	TEST_PROGRAM("assert((mag:getPixel(7 * 8, 0) & 0xFF) == ((7 * 7 + 1) & 0xFF))");
 
 	TEST_PROGRAM("emu:flushDebuggerEvents()");
 	mScriptContextDeinit(&context);

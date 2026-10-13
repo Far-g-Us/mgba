@@ -1502,6 +1502,38 @@ static int64_t _mScriptCoreAdapterSetBreakpoint(struct mScriptCoreAdapter* adapt
 	return _addCallbackToBreakpoint(&adapter->debugger, point, callback);
 }
 
+#ifdef ENABLE_DEBUGGERS
+// emu:runFrame() reached the core directly, and the core runs a frame by calling
+// its own runLoop. Breakpoints are not checked there: they are checked inside
+// mDebuggerRunTimeout, which is a path the script never took. So with a
+// breakpoint set and a script driving the frames, the breakpoint simply never
+// fired, however many frames ran.
+//
+// When the debugger is attached and holds breakpoints, step the frame instead and
+// ask after each instruction, which is what the debugger does for its own run
+// loop. Without breakpoints this stays the plain core call, so the common case
+// costs nothing.
+//
+// Stepping a whole frame is slow, so the loop is bounded by the frame boundary
+// and by a hard cap: a core that never advances its frame counter would
+// otherwise spin here forever.
+static void _mScriptCoreAdapterRunFrame(struct mScriptCoreAdapter* adapter) {
+	struct mCore* core = adapter->core;
+	struct mDebugger* debugger = adapter->debugger.d.p;
+	uint32_t target;
+	int64_t budget = SCREENSHOT_REGION_MAX_PIXELS;
+	if (!debugger || !debugger->platform->hasBreakpoints(debugger->platform)) {
+		core->runFrame(core);
+		return;
+	}
+	target = core->frameCounter(core) + 1;
+	while (core->frameCounter(core) < target && budget-- > 0) {
+		core->step(core);
+		debugger->platform->checkBreakpoints(debugger->platform);
+	}
+}
+#endif
+
 static int64_t _mScriptCoreAdapterSetWatchpoint(struct mScriptCoreAdapter* adapter, struct mScriptValue* callback, uint32_t address, int type, int32_t segment) {
 	if (!_setupDebugger(adapter)) {
 		return -1;
@@ -1735,6 +1767,9 @@ mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, U64, currentCycle, _mScriptCor
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S64, setBreakpoint, _mScriptCoreAdapterSetBreakpoint, 3, WRAPPER, callback, U32, address, S32, segment);
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S64, setWatchpoint, _mScriptCoreAdapterSetWatchpoint, 4, WRAPPER, callback, U32, address, S32, type, S32, segment);
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S64, setRangeWatchpoint, _mScriptCoreAdapterSetRangeWatchpoint, 5, WRAPPER, callback, U32, minAddress, U32, maxAddress, S32, type, S32, segment);
+#ifdef ENABLE_DEBUGGERS
+mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, runFrame, _mScriptCoreAdapterRunFrame, 0);
+#endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, BOOL, clearBreakpoint, _mScriptCoreAdapterClearBreakpoint, 1, S64, cbid);
 
 mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, setBreakpoint)
@@ -1808,9 +1843,11 @@ mSCRIPT_DEFINE_STRUCT(mScriptCoreAdapter)
 	mSCRIPT_DEFINE_DOCSTRING(
 		"Set a watchpoint in a given range of a given type. Note that the range is exclusive on the end, "
 		"as though you've added the size, i.e. a 4-byte watch would specify the maximum as the minimum address + 4"
-	)	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
+)	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, setRangeWatchpoint)
+	mSCRIPT_DEFINE_DOCSTRING("Run until the next frame, checking breakpoints as it goes")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, runFrame)
+mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #endif
-		mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)
 mSCRIPT_DEFINE_END;

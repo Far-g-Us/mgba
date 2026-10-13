@@ -126,12 +126,15 @@ static void _checkWatchpoints(struct ARMDebugger* debugger, uint32_t address, en
 			info.type.wp.watchType = watchpoint->type;
 			info.type.wp.accessType = type;
 			info.type.wp.accessSource = debugger->cpu->memory.accessSource;
-			// Only a program access has an instruction behind it. _ARMPCAddress is the
-			// same helper the rest of the ARM debugger uses, which undoes the pipeline
-			// offset the PC register carries; taking the register raw would name the
-			// following instruction instead of the one that did the access.
+			// Only a program access has an instruction behind it. The convention is the
+			// one the rest of the ARM debugger uses for the same question:
+			// ARMDebuggerCheckBreakpoints and the interactive debugger's PC line both
+			// subtract the instruction length and nothing more, so a breakpoint set
+			// at this address is one that fires. Note that _ARMPCAddress subtracts
+			// twice the length, which is the fetch base rather than the instruction
+			// on it, and using it here pointed two bytes too far back in Thumb.
 			info.pc = (debugger->cpu->memory.accessSource == mACCESS_PROGRAM)
-			          ? (int32_t) _ARMPCAddress(debugger->cpu)
+			          ? (int32_t) (debugger->cpu->gprs[ARM_PC] - _ARMInstructionLength(debugger->cpu))
 			          : -1;
 			info.address = address;
 			info.segment = 0;

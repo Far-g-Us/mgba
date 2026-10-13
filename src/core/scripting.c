@@ -1616,6 +1616,62 @@ static int64_t _mScriptCoreAdapterSetBreakpoint(struct mScriptCoreAdapter* adapt
 	return _addCallbackToBreakpoint(&adapter->debugger, point, callback);
 }
 
+// Trace a range of code by putting a breakpoint on every instruction address in
+// it. The callback is the caller's and receives each hit as a breakpoint hit
+// normally does, so frames stay the caller's to run and the trace interleaves
+// with whatever else the script is doing. Registers are read in the callback
+// with emu:readRegister, which already works and costs nothing extra to expose.
+//
+// One breakpoint per instruction is what makes this work, and it is why the
+// range is bounded: every hit is a full stop, so this is for a single function
+// rather than a sweep. The range is walked at the width the caller names, since
+// nothing in the bytes marks the instruction set. A mode that is neither thumb
+// nor arm arms nothing rather than quietly walking thumb, because a silent
+// thumb walk over ARM code is the failure this function exists to prevent.
+//
+// The points stay armed until the session ends: the handles are not handed out,
+// so a script cannot clear them, and while any point is armed runFrame takes its
+// stepping path. That is the price of one breakpoint per instruction and it is
+// why the range is meant to be short.
+#define LOGTRACE_MAX_POINTS 2048
+
+static int32_t _mScriptCoreLogTrace(struct mScriptCoreAdapter* adapter, struct mScriptValue* callback, uint32_t start, uint32_t end, const char* mode) {
+	uint32_t step;
+	uint32_t address;
+	uint32_t placed = 0;
+	if (!mode) {
+		return 0;
+	}
+	if (!strcmp(mode, "arm")) {
+		step = 4;
+	} else if (!strcmp(mode, "thumb")) {
+		step = 2;
+	} else {
+		return 0;
+	}
+	if (end <= start) {
+		return 0;
+	}
+	// Walking up to a range ending near the top of the address space would wrap
+	// past 0 and keep arming points from the bottom up, so the walk stops at the
+	// last address the range can actually reach.
+	for (address = start; address < end; address += step) {
+		int64_t handle;
+		if (UINT32_MAX - address < step) {
+			break;
+		}
+		handle = _mScriptCoreAdapterSetBreakpoint(adapter, callback, address, 0);
+		if (handle <= 0) {
+			break;
+		}
+		placed++;
+		if (placed >= LOGTRACE_MAX_POINTS) {
+			break;
+		}
+	}
+	return (int32_t) placed;
+}
+
 #ifdef ENABLE_DEBUGGERS
 // emu:runFrame() reached the core directly, and the core runs a frame by calling
 // its own runLoop. Breakpoints are not checked there: they are checked inside
@@ -1861,6 +1917,7 @@ static void _mScriptCoreAdapterWrite32(struct mScriptCoreAdapter* adapter, uint3
 mSCRIPT_DECLARE_STRUCT(mScriptCoreAdapter);
 #ifdef M_CORE_GBA
 mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, WSTR, disasm, _mScriptCoreDisasm, 3, U32, address, U32, count, CHARP, mode);
+mSCRIPT_DECLARE_STRUCT_METHOD_WITH_DEFAULTS(mScriptCoreAdapter, S32, logTrace, _mScriptCoreLogTrace, 4, WRAPPER, callback, U32, start, U32, end, CHARP, mode);
 #endif
 mSCRIPT_DECLARE_STRUCT_METHOD(mScriptCoreAdapter, W(mCore), _get, _mScriptCoreAdapterGet, 1, CHARP, name);
 mSCRIPT_DECLARE_STRUCT_VOID_METHOD(mScriptCoreAdapter, _deinit, _mScriptCoreAdapterDeinit, 0);
@@ -1911,6 +1968,12 @@ mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, setRangeWatchpoint)
 mSCRIPT_DEFINE_DEFAULTS_END;
 #ifdef M_CORE_GBA
 mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, disasm)
+	mSCRIPT_NO_DEFAULT,
+	mSCRIPT_NO_DEFAULT,
+	mSCRIPT_CHARP("thumb")
+mSCRIPT_DEFINE_DEFAULTS_END;
+mSCRIPT_DEFINE_STRUCT_BINDING_DEFAULTS(mScriptCoreAdapter, logTrace)
+	mSCRIPT_NO_DEFAULT,
 	mSCRIPT_NO_DEFAULT,
 	mSCRIPT_NO_DEFAULT,
 	mSCRIPT_CHARP("thumb")
@@ -1975,6 +2038,8 @@ mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, flushDebuggerEvents)
 #ifdef M_CORE_GBA
 	mSCRIPT_DEFINE_DOCSTRING("Disassemble count instructions at address. mode is thumb, arm or auto, default thumb")
 	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, disasm)
+	mSCRIPT_DEFINE_DOCSTRING("Put a breakpoint on every instruction in a range and pass each hit to the callback")
+	mSCRIPT_DEFINE_STRUCT_METHOD(mScriptCoreAdapter, logTrace)
 #endif
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, S(mCore), _core)
 	mSCRIPT_DEFINE_STRUCT_CAST_TO_MEMBER(mScriptCoreAdapter, CS(mCore), _core)

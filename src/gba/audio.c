@@ -435,7 +435,17 @@ static void _sample(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 		// Interrupted
 		GBAInterrupt(audio->p);
 	}
-	mTimingSchedule(timing, &audio->sampleEvent, SAMPLE_INTERVAL - cyclesLate);
+	// SAMPLE_INTERVAL - cyclesLate может оказаться нулевым или отрицательным,
+	// если событие проспало дольше интервала (например, эмулятор стоял
+	// остановленным отладчиком). Тогда событие планируется в прошлое и
+	// больше не срабатывает: звук пропадает навсегда, хотя регистры и DMA
+	// продолжают работать. Отработка в прошлом бесполезна, поэтому
+	// интервал зажимается в положительную величину.
+	int32_t nextInterval = SAMPLE_INTERVAL - cyclesLate;
+	if (nextInterval < 1) {
+		nextInterval = 1;
+	}
+	mTimingSchedule(timing, &audio->sampleEvent, nextInterval);
 }
 
 void GBAAudioSerialize(const struct GBAAudio* audio, struct GBASerializedState* state) {

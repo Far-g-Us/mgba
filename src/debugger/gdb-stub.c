@@ -429,6 +429,11 @@ static void _writeRegister(struct GDBStub* stub, const char* message) {
 		}
 	} else if (reg == 0x19) {
 		cpu->cpsr.packed = value;
+		// Без этого cpu->executionMode остаётся прежним, и последующая
+		// запись PC выбирает ARMWritePC вместо ThumbWritePC: прыжок в
+		// Thumb-код исполняется как ARM и падает с SIGILL.
+		// Канонический путь - _GBACoreWriteRegister (gba/core.c).
+		_ARMReadCPSR(cpu);
 	} else {
 		stub->outgoing[0] = '\0';
 		_sendMessage(stub);

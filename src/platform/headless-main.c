@@ -23,6 +23,7 @@
 #endif
 
 #include <mgba/feature/commandline.h>
+#include <mgba-util/audio-buffer.h>
 #include <mgba-util/vector.h>
 #include <mgba-util/vfs.h>
 
@@ -37,14 +38,20 @@ static const char* const headlessUsage =
 	"  -R REGISTER      General purpose register to return as exit code\n"
 #ifdef ENABLE_SCRIPTING
 
-	"  --script FILE    Run a script on start. Can be passed multiple times\n"
-#endif
+"  --script FILE    Run a script on start. Can be passed multiple times\n"
+	"  --audio FILE     Write the emulated audio to FILE as raw signed 16-bit\n"
+	"                    stereo samples. Needs --audio to be given once.\n"
+	"  --audio-samples N  Audio buffer size in samples (default 2048)\n"
+	#endif
 	;
 
 struct HeadlessOpts {
 	int exitSwiImmediate;
 	char* returnCodeRegister;
 	struct StringList scripts;
+	char* audioOut;
+	size_t audioSamples;
+	int audioDebug;
 };
 
 static void _headlessShutdown(int signal);
@@ -55,6 +62,36 @@ static bool _parseSwi(const char* regStr, int* oSwi);
 static bool _headlessCheckResiger(void);
 
 static struct mCore* core;
+
+// Захват звука: буфер принадлежит ядру, фронтенд только читает из него. Слив
+// вынесен в функцию, потому что главный цикл идёт двумя ветвями (отладчик и
+// runLoop), а писать PCM нужно в обеих.
+static struct mAudioBuffer* _audioBuffer;
+static int16_t* _audioRead;
+static FILE* _audioFile;
+static size_t _audioSamplesMax;
+static int _audioDebugLeft;
+
+static void _headlessDrainAudio(struct mCore* audioCore) {
+	if (!_audioBuffer) {
+		return;
+	}
+	size_t available = mAudioBufferAvailable(_audioBuffer);
+	if (_audioDebugLeft > 0) {
+		fprintf(stderr, "AUDIODBG rate=%u avail=%zu cap=%zu\n",
+			audioCore->audioSampleRate(audioCore), available,
+			mAudioBufferCapacity(_audioBuffer));
+		_audioDebugLeft--;
+	}
+	if (available > _audioSamplesMax) {
+		available = _audioSamplesMax;
+	}
+	if (available > 0) {
+		size_t got = mAudioBufferRead(_audioBuffer, _audioRead, available);
+		fwrite(_audioRead, sizeof(int16_t), got, _audioFile);
+		fflush(_audioFile);
+	}
+}
 
 static bool _dispatchExiting = false;
 static int _exitCode = 0;
@@ -79,7 +116,7 @@ int main(int argc, char * argv[]) {
 	int uncleanExit = 1;
 	size_t i;
 
-	struct HeadlessOpts headlessOpts = { 3, NULL };
+	struct HeadlessOpts headlessOpts = { 3, NULL, .scripts = { 0 }, NULL, 2048, 0 };
 	StringListInit(&headlessOpts.scripts, 0);
 	struct mSubParser subparser = {
 		.usage = headlessUsage,
@@ -89,6 +126,18 @@ int main(int argc, char * argv[]) {
 		.longOptions = (struct mOption[]) {
 			{
 				.name = "script",
+				.arg = true,
+			},
+			{
+				.name = "audio",
+				.arg = true,
+			},
+			{
+				.name = "audio-samples",
+				.arg = true,
+			},
+			{
+				.name = "audio-debug",
 				.arg = true,
 			},
 			{0}
@@ -122,6 +171,10 @@ int main(int argc, char * argv[]) {
 		goto argsExit;
 	}
 	core->init(core);
+	// _GBACoreLoadConfig берёт masterVolume из core->opts.volume, а не из
+	// SOUNDCNT. SDL и libretro ставят 0x100 явно, headless не ставил, и
+	// _applyBias домножал всё на 0 — звук был полностью цифровой тишиной.
+	core->opts.volume = 0x100;
 	mCoreInitConfig(core, "headless");
 	mArgumentsApply(&args, NULL, 0, &core->config);
 
@@ -261,17 +314,46 @@ int main(int argc, char * argv[]) {
 	}
 #endif
 
+// Захват звука: буфер принадлежит ядру, фронтенд только читает из него
+	// и складывает в файл. Без этого ветви mGBA в headless звука не было
+	// вообще, что делало невозможной проверку любого декодера.
+	if (headlessOpts.audioOut) {
+		_audioFile = fopen(headlessOpts.audioOut, "wb");
+		if (!_audioFile) {
+			fprintf(stderr, "не удалось открыть %s для аудио\n", headlessOpts.audioOut);
+			goto audioError;
+		}
+		core->setAudioBufferSize(core, headlessOpts.audioSamples);
+		_audioBuffer = core->getAudioBuffer(core);
+		_audioSamplesMax = headlessOpts.audioSamples * 2;
+		_audioDebugLeft = headlessOpts.audioDebug;
+		_audioRead = malloc(_audioSamplesMax * sizeof(int16_t));
+		if (!_audioRead) {
+			goto audioError;
+		}
+	}
+
 #ifdef ENABLE_DEBUGGERS
 	if (hasDebugger) {
 		do {
 			mDebuggerRun(&debugger);
+			_headlessDrainAudio(core);
 		} while (!_dispatchExiting && debugger.state != DEBUGGER_SHUTDOWN);
 	} else
 #endif
 	do {
 		core->runLoop(core);
+		_headlessDrainAudio(core);
 	} while (!_dispatchExiting && !mScriptShouldStop());
 	cleanExit = true;
+audioError:
+	if (_audioFile) {
+		fclose(_audioFile);
+		_audioFile = NULL;
+	}
+	free(_audioRead);
+	_audioRead = NULL;
+	_audioBuffer = NULL;
 
 scriptsError:
 	core->unloadROM(core);
@@ -419,6 +501,29 @@ static bool _parseLongHeadlessOpts(struct mSubParser* parser, const char* option
 	struct HeadlessOpts* opts = parser->opts;
 	if (strcmp(option, "script") == 0) {
 		*StringListAppend(&opts->scripts) = strdup(arg);
+		return true;
+	}
+	if (strcmp(option, "audio") == 0) {
+		free(opts->audioOut);
+		opts->audioOut = strdup(arg);
+		return true;
+	}
+	if (strcmp(option, "audio-debug") == 0) {
+		char* parseEnd;
+		long n = strtol(arg, &parseEnd, 0);
+		if (errno || *parseEnd || n < 0 || n > 1000000) {
+			return false;
+		}
+		opts->audioDebug = n;
+		return true;
+	}
+	if (strcmp(option, "audio-samples") == 0) {
+		char* parseEnd;
+		long samples = strtol(arg, &parseEnd, 0);
+		if (errno || *parseEnd || samples <= 0 || samples > (1 << 20)) {
+			return false;
+		}
+		opts->audioSamples = samples;
 		return true;
 	}
 	return false;
